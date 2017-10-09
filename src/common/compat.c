@@ -3113,7 +3113,7 @@ struct tm *
 tor_gmtime_r(const time_t *timep, struct tm *result)
 {
   struct tm *r;
-  r = sandbox_gmtime_r(timep, result);
+  r = gmtime_r(timep, result);
   return correct_tm(0, timep, result, r);
 }
 #elif defined(TIME_FNS_NEED_LOCKS)
@@ -3125,7 +3125,7 @@ tor_gmtime_r(const time_t *timep, struct tm *result)
   if (!m) { m=tor_mutex_new(); }
   tor_assert(result);
   tor_mutex_acquire(m);
-  r = sandbox_gmtime(timep);
+  r = gmtime(timep);
   if (r)
     memcpy(result, r, sizeof(struct tm));
   tor_mutex_release(m);
@@ -3137,7 +3137,7 @@ tor_gmtime_r(const time_t *timep, struct tm *result)
 {
   struct tm *r;
   tor_assert(result);
-  r = sandbox_gmtime(timep);
+  r = gmtime(timep);
   if (r)
     memcpy(result, r, sizeof(struct tm));
   return correct_tm(0, timep, result, r);

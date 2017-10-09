@@ -106,7 +106,6 @@ typedef enum _request_type {
 	MKDIR		= 7,
 	STAT		= 8,
 	RENAME		= 9,
-	GMTIME		= 10,
 } request_type;
 
 typedef enum _response_code {
@@ -168,10 +167,6 @@ struct request_rename {
 	char	 r_to_path[512];
 };
 
-struct request_gmtime {
-	time_t	 r_clock;
-};
-
 struct request {
 	request_type	 r_type;
 	union {
@@ -184,7 +179,6 @@ struct request {
 		struct request_mkdir		 u_mkdir;
 		struct request_stat		 u_stat;
 		struct request_rename		 u_rename;
-		struct request_gmtime		 u_gmtime;
 	}		 r_payload;
 };
 
@@ -228,8 +222,6 @@ int sandbox_getaddrinfo(const char *, const char *,
 int sandbox_connect(int, struct sockaddr *, socklen_t);
 int sandbox_stat(const char *, struct stat *);
 int sandbox_rename(const char *, const char *);
-struct tm *sandbox_gmtime(const time_t *);
-struct tm *sandbox_gmtime_r(const time_t *, struct tm *);
 int sandbox_close(int);
 
 void fork_backend(void);

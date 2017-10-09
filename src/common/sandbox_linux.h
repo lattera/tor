@@ -124,10 +124,6 @@ void sandbox_free_getaddrinfo_cache(void);
   stat((path), (sb))
 #define sandbox_rename(from, to) \
   rename((from), (to))
-#define sandbox_gmtime(clock) \
-  gmtime((clock))
-#define sandbox_gmtime_r(clock, tm) \
-  gmtime_r((clock), (tm))
 #define sandbox_close(fd) \
   close((fd))
 #define fork_backend do { } while (0);

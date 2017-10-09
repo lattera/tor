@@ -60,7 +60,6 @@ static callback_result do_close(int, struct request *);
 static callback_result do_mkdir(int, struct request *);
 static callback_result do_stat(int, struct request *);
 static callback_result do_rename(int, struct request *);
-static callback_result do_gmtime(int, struct request *);
 
 static struct callback {
 	request_type	c_type;
@@ -105,10 +104,6 @@ static struct callback {
 	{
 		RENAME,
 		do_rename
-	},
-	{
-		GMTIME,
-		do_gmtime
 	}
 };
 
@@ -637,18 +632,6 @@ do_rename(int fd, struct request *request)
 	}
 
 	send(fd, &response, sizeof(response), 0);
-
-	return (CB_TERMINATE);
-}
-
-static callback_result
-do_gmtime(int fd, struct request *request)
-{
-	struct tm *res;
-
-	res = gmtime(&(request->r_payload.u_gmtime.r_clock));
-
-	send(fd, res, sizeof(*res), 0);
 
 	return (CB_TERMINATE);
 }

@@ -690,57 +690,6 @@ sandbox_close(int fd)
 	return (res);
 }
 
-struct tm *
-sandbox_gmtime(const time_t *clock)
-{
-	struct request request;
-	static struct tm res;
-
-	if (!active)
-		return (gmtime(clock));
-
-	pthread_mutex_lock(&sandbox_mtx);
-
-	memset(&request, 0, sizeof(request));
-	memset(&res, 0, sizeof(res));
-
-	request.r_type = GMTIME;
-	memmove(&(request.r_payload.u_gmtime.r_clock), clock,
-	    sizeof(request.r_payload.u_gmtime.r_clock));
-
-	send(backend_fd, &request, sizeof(request), 0);
-	recv(backend_fd, &res, sizeof(res), 0);
-
-	pthread_mutex_unlock(&sandbox_mtx);
-
-	return (&res);
-}
-
-struct tm *
-sandbox_gmtime_r(const time_t *clock, struct tm *result)
-{
-	struct request request;
-
-	if (!active)
-		return (gmtime_r(clock, result));
-
-	pthread_mutex_lock(&sandbox_mtx);
-
-	memset(&request, 0, sizeof(request));
-	memset(result, 0, sizeof(*result));
-
-	request.r_type = GMTIME;
-	memmove(&(request.r_payload.u_gmtime.r_clock), clock,
-	    sizeof(request.r_payload.u_gmtime.r_clock));
-
-	send(backend_fd, &request, sizeof(request), 0);
-	recv(backend_fd, result, sizeof(*result), 0);
-
-	pthread_mutex_unlock(&sandbox_mtx);
-
-	return (result);
-}
-
 sandbox_cfg_t*
 sandbox_cfg_new(void)
 {
