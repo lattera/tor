@@ -2155,7 +2155,7 @@ clean_name_for_stat(char *name)
 MOCK_IMPL(int,
 tor_unlink,(const char *pathname))
 {
-  return unlink(pathname);
+  return sandbox_unlink(pathname);
 }
 
 /** Return:
@@ -2179,7 +2179,7 @@ file_status(const char *fname)
   f = tor_strdup(fname);
   clean_name_for_stat(f);
   log_debug(LD_FS, "stat()ing %s", f);
-  r = stat(sandbox_intern_string(f), &st);
+  r = sandbox_stat(sandbox_intern_string(f), &st);
   tor_free(f);
   if (r) {
     if (errno == ENOENT) {
@@ -2237,6 +2237,13 @@ check_private_dir,(const char *dirname, cpd_check_t check,
   const struct passwd *pw = NULL;
   uid_t running_uid;
   gid_t running_gid;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+
+  cap_rights_init(&rights, CAP_FSTAT);
+#else
+  char rights;
+#endif
 
   /*
    * Goal is to harden the implementation by removing any
@@ -2251,7 +2258,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
 
   /* Open directory.
    * O_NOFOLLOW to ensure that it does not follow symbolic links */
-  fd = open(sandbox_intern_string(dirname), O_NOFOLLOW);
+  fd = sandbox_open(sandbox_intern_string(dirname), O_NOFOLLOW, 0, &rights);
 
   /* Was there an error? Maybe the directory does not exist? */
   if (fd == -1) {
@@ -2269,9 +2276,9 @@ check_private_dir,(const char *dirname, cpd_check_t check,
     if (check & CPD_CREATE) {
       log_info(LD_GENERAL, "Creating directory %s", dirname);
       if (check & CPD_GROUP_READ) {
-        r = mkdir(dirname, 0750);
+        r = sandbox_mkdir(dirname, 0750);
       } else {
-        r = mkdir(dirname, 0700);
+        r = sandbox_mkdir(dirname, 0700);
       }
 
       /* check for mkdir() error */
@@ -2283,7 +2290,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
 
       /* we just created the directory. try to open it again.
        * permissions on the directory will be checked again below.*/
-      fd = open(sandbox_intern_string(dirname), O_NOFOLLOW);
+      fd = sandbox_open(sandbox_intern_string(dirname), O_NOFOLLOW, 0, &rights);
 
       if (fd == -1) {
         log_warn(LD_FS, "Could not reopen recently created directory %s: %s",
@@ -2291,7 +2298,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
                  strerror(errno));
         return -1;
       } else {
-        close(fd);
+        sandbox_close(fd);
       }
 
     } else if (!(check & CPD_CHECK)) {
@@ -2313,7 +2320,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
   r = fstat(fd, &st);
   if (r == -1) {
       log_warn(LD_FS, "fstat() on directory %s failed.", dirname);
-      close(fd);
+      sandbox_close(fd);
       return -1;
   }
   //tor_free(f);
@@ -2321,7 +2328,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
   /* check that dirname is a directory */
   if (!(st.st_mode & S_IFDIR)) {
     log_warn(LD_FS, "%s is not a directory", dirname);
-    close(fd);
+    sandbox_close(fd);
     return -1;
   }
 
@@ -2332,7 +2339,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
     if (pw == NULL) {
       log_warn(LD_CONFIG, "Error setting configured user: %s not found",
                effective_user);
-      close(fd);
+      sandbox_close(fd);
       return -1;
     }
     running_uid = pw->pw_uid;
@@ -2363,7 +2370,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
 
     tor_free(process_ownername);
     tor_free(file_ownername);
-    close(fd);
+    sandbox_close(fd);
     return -1;
   }
   if ( (check & (CPD_GROUP_OK|CPD_GROUP_READ))
@@ -2380,7 +2387,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
              gr ?  gr->gr_name : "<unknown>", (int)st.st_gid);
 
     tor_free(process_groupname);
-    close(fd);
+    sandbox_close(fd);
     return -1;
   }
   unsigned unwanted_bits = 0;
@@ -2398,7 +2405,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
     if (check & CPD_CHECK_MODE_ONLY) {
       log_warn(LD_FS, "Permissions on directory %s are too permissive.",
                dirname);
-      close(fd);
+      sandbox_close(fd);
       return -1;
     }
     log_warn(LD_FS, "Fixing permissions on directory %s", dirname);
@@ -2411,14 +2418,14 @@ check_private_dir,(const char *dirname, cpd_check_t check,
     if (fchmod(fd, new_mode)) {
       log_warn(LD_FS, "Could not chmod directory %s: %s", dirname,
                strerror(errno));
-      close(fd);
+      sandbox_close(fd);
       return -1;
     } else {
-      close(fd);
+      sandbox_close(fd);
       return 0;
     }
   }
-  close(fd);
+  sandbox_close(fd);
 #else /* !(!defined(_WIN32)) */
   /* Win32 case: we can't open() a directory. */
   (void)effective_user;
@@ -2426,7 +2433,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
   char *f = tor_strdup(dirname);
   clean_name_for_stat(f);
   log_debug(LD_FS, "stat()ing %s", f);
-  r = stat(sandbox_intern_string(f), &st);
+  r = sandbox_stat(sandbox_intern_string(f), &st);
   tor_free(f);
   if (r) {
     if (errno != ENOENT) {
@@ -2514,6 +2521,11 @@ start_writing_to_file(const char *fname, int open_flags, int mode,
   open_file_t *new_file = tor_malloc_zero(sizeof(open_file_t));
   const char *open_name;
   int append = 0;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+#else
+  char rights;
+#endif
 
   tor_assert(fname);
   tor_assert(data_out);
@@ -2540,7 +2552,10 @@ start_writing_to_file(const char *fname, int open_flags, int mode,
     new_file->binary = 1;
 #endif
 
-  new_file->fd = tor_open_cloexec(open_name, open_flags, mode);
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_init(&rights, CAP_CREATE, CAP_READ, CAP_WRITE, CAP_SEEK, CAP_FCNTL);
+#endif
+  new_file->fd = tor_open_cloexec(open_name, open_flags, mode, &rights);
   if (new_file->fd < 0) {
     log_warn(LD_FS, "Couldn't open \"%s\" (%s) for writing: %s",
         open_name, fname, strerror(errno));
@@ -2560,7 +2575,7 @@ start_writing_to_file(const char *fname, int open_flags, int mode,
 
  err:
   if (new_file->fd >= 0)
-    close(new_file->fd);
+    sandbox_close(new_file->fd);
   *data_out = NULL;
   tor_free(new_file->filename);
   tor_free(new_file->tempname);
@@ -2613,12 +2628,12 @@ finish_writing_to_file_impl(open_file_t *file_data, int abort_write)
 
   tor_assert(file_data && file_data->filename);
   if (file_data->stdio_file) {
-    if (fclose(file_data->stdio_file)) {
+    if (sandbox_close(file_data->stdio_file)) {
       log_warn(LD_FS, "Error closing \"%s\": %s", file_data->filename,
                strerror(errno));
       abort_write = r = -1;
     }
-  } else if (file_data->fd >= 0 && close(file_data->fd) < 0) {
+  } else if (file_data->fd >= 0 && sandbox_close(file_data->fd) < 0) {
     log_warn(LD_FS, "Error flushing \"%s\": %s", file_data->filename,
              strerror(errno));
     abort_write = r = -1;
@@ -2635,7 +2650,7 @@ finish_writing_to_file_impl(open_file_t *file_data, int abort_write)
       }
     }
     if (abort_write) {
-      int res = unlink(file_data->tempname);
+      int res = sandbox_unlink(file_data->tempname);
       if (res != 0) {
         /* We couldn't unlink and we'll leave a mess behind */
         log_warn(LD_FS, "Failed to unlink %s: %s",
@@ -2836,7 +2851,7 @@ read_file_to_str, (const char *filename, int flags, struct stat *stat_out))
 
   tor_assert(filename);
 
-  fd = tor_open_cloexec(filename,O_RDONLY|(bin?O_BINARY:O_TEXT),0);
+  fd = tor_open_cloexec(filename,O_RDONLY|(bin?O_BINARY:O_TEXT),0, NULL);
   if (fd<0) {
     int severity = LOG_WARN;
     int save_errno = errno;
@@ -2850,7 +2865,7 @@ read_file_to_str, (const char *filename, int flags, struct stat *stat_out))
 
   if (fstat(fd, &statbuf)<0) {
     int save_errno = errno;
-    close(fd);
+    sandbox_close(fd);
     log_warn(LD_FS,"Could not fstat \"%s\".",filename);
     errno = save_errno;
     return NULL;
@@ -2868,7 +2883,7 @@ read_file_to_str, (const char *filename, int flags, struct stat *stat_out))
       statbuf.st_size = sz;
       memcpy(stat_out, &statbuf, sizeof(struct stat));
     }
-    close(fd);
+    sandbox_close(fd);
     if (!string)
       errno = save_errno;
     return string;
@@ -2876,7 +2891,7 @@ read_file_to_str, (const char *filename, int flags, struct stat *stat_out))
 #endif /* !defined(_WIN32) */
 
   if ((uint64_t)(statbuf.st_size)+1 >= SIZE_T_CEILING) {
-    close(fd);
+    sandbox_close(fd);
     errno = EINVAL;
     return NULL;
   }
@@ -2889,7 +2904,7 @@ read_file_to_str, (const char *filename, int flags, struct stat *stat_out))
     log_warn(LD_FS,"Error reading from file \"%s\": %s", filename,
              strerror(errno));
     tor_free(string);
-    close(fd);
+    sandbox_close(fd);
     errno = save_errno;
     return NULL;
   }
@@ -2914,11 +2929,11 @@ read_file_to_str, (const char *filename, int flags, struct stat *stat_out))
       log_warn(LD_FS,"Could read only %d of %ld bytes of file \"%s\".",
                (int)r, (long)statbuf.st_size,filename);
       tor_free(string);
-      close(fd);
+      sandbox_close(fd);
       errno = save_errno;
       return NULL;
     }
-  close(fd);
+  sandbox_close(fd);
   if (stat_out) {
     memcpy(stat_out, &statbuf, sizeof(struct stat));
   }
@@ -3522,7 +3537,7 @@ tor_listdir, (const char *dirname))
       break;
     }
   }
-  FindClose(handle);
+  Findsandbox_close(handle);
   tor_free(pattern);
 #else /* !(defined(_WIN32)) */
   const char *prot_dname = sandbox_intern_string(dirname);
@@ -3604,7 +3619,7 @@ start_daemon(void)
     int ok;
     char c;
 
-    close(daemon_filedes[1]); /* we only read */
+    sandbox_close(daemon_filedes[1]); /* we only read */
     ok = -1;
     while (0 < read(daemon_filedes[0], &c, sizeof(char))) {
       if (c == '.')
@@ -3616,7 +3631,7 @@ start_daemon(void)
     else
       exit(1); /* child reported error */
   } else { /* Child */
-    close(daemon_filedes[0]); /* we only write */
+    sandbox_close(daemon_filedes[0]); /* we only write */
 
     (void) setsid(); /* Detach from controlling terminal */
     /*
@@ -3658,7 +3673,7 @@ finish_daemon(const char *desired_cwd)
     exit(1);
   }
 
-  nullfd = tor_open_cloexec("/dev/null", O_RDWR, 0);
+  nullfd = tor_open_cloexec("/dev/null", O_RDWR, 0, NULL);
   if (nullfd < 0) {
     /* LCOV_EXCL_START */
     log_err(LD_GENERAL,"/dev/null can't be opened. Exiting.");
@@ -3678,12 +3693,12 @@ finish_daemon(const char *desired_cwd)
     /* LCOV_EXCL_STOP */
   }
   if (nullfd > 2)
-    close(nullfd);
+    sandbox_close(nullfd);
   /* signal success */
   if (write(daemon_filedes[1], &c, sizeof(char)) != sizeof(char)) {
     log_err(LD_GENERAL,"write failed. Exiting.");
   }
-  close(daemon_filedes[1]);
+  sandbox_close(daemon_filedes[1]);
 }
 #else /* !(!defined(_WIN32)) */
 /* defined(_WIN32) */
@@ -3705,24 +3720,38 @@ int
 write_pidfile(const char *filename)
 {
   FILE *pidfile;
+  int fd;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
 
-  if ((pidfile = fopen(filename, "w")) == NULL) {
+  cap_rights_init(&rights, CAP_WRITE, CAP_FCNTL);
+#else
+  char rights;
+#endif
+
+  fd = sandbox_open(filename, O_WRONLY | O_CREAT, 0600, &rights);
+  if (fd == -1) {
     log_warn(LD_FS, "Unable to open \"%s\" for writing: %s", filename,
              strerror(errno));
     return -1;
-  } else {
-#ifdef _WIN32
-    int pid = (int)_getpid();
-#else
-    int pid = (int)getpid();
-#endif
-    int rv = 0;
-    if (fprintf(pidfile, "%d\n", pid) < 0)
-      rv = -1;
-    if (fclose(pidfile) < 0)
-      rv = -1;
-    return rv;
   }
+
+  if ((pidfile = fdopen(fd, "w")) == NULL) {
+    log_warn(LD_FS, "Unable to open \"%s\" for writing: %s", filename,
+             strerror(errno));
+    return -1;
+  }
+#ifdef _WIN32
+  int pid = (int)_getpid();
+#else
+  int pid = (int)getpid();
+#endif
+  int rv = 0;
+  if (fprintf(pidfile, "%d\n", pid) < 0)
+    rv = -1;
+  if (sandbox_close(pidfile) < 0)
+    rv = -1;
+  return rv;
 }
 
 #ifdef _WIN32
@@ -4353,8 +4382,8 @@ tor_spawn_background(const char *const filename, const char **argv,
       "Failed to set up pipe for stderr communication with child process: %s",
       strerror(errno));
 
-    close(stdout_pipe[0]);
-    close(stdout_pipe[1]);
+    sandbox_close(stdout_pipe[0]);
+    sandbox_close(stdout_pipe[1]);
 
     return status;
   }
@@ -4365,10 +4394,10 @@ tor_spawn_background(const char *const filename, const char **argv,
       "Failed to set up pipe for stdin communication with child process: %s",
        strerror(errno));
 
-    close(stdout_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[0]);
-    close(stderr_pipe[1]);
+    sandbox_close(stdout_pipe[0]);
+    sandbox_close(stdout_pipe[1]);
+    sandbox_close(stderr_pipe[0]);
+    sandbox_close(stderr_pipe[1]);
 
     return status;
   }
@@ -4426,18 +4455,18 @@ tor_spawn_background(const char *const filename, const char **argv,
 
     // child_state = CHILD_STATE_CLOSEFD;
 
-    close(stderr_pipe[0]);
-    close(stderr_pipe[1]);
-    close(stdout_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stdin_pipe[0]);
-    close(stdin_pipe[1]);
+    sandbox_close(stderr_pipe[0]);
+    sandbox_close(stderr_pipe[1]);
+    sandbox_close(stdout_pipe[0]);
+    sandbox_close(stdout_pipe[1]);
+    sandbox_close(stdin_pipe[0]);
+    sandbox_close(stdin_pipe[1]);
 
     /* Close all other fds, including the read end of the pipe */
     /* XXX: We should now be doing enough FD_CLOEXEC setting to make
      * this needless. */
     for (fd = STDERR_FILENO + 1; fd < max_fd; fd++) {
-      close(fd);
+      sandbox_close(fd);
     }
 
     // child_state = CHILD_STATE_EXEC;
@@ -4485,12 +4514,12 @@ tor_spawn_background(const char *const filename, const char **argv,
 
   if (-1 == pid) {
     log_warn(LD_GENERAL, "Failed to fork child process: %s", strerror(errno));
-    close(stdin_pipe[0]);
-    close(stdin_pipe[1]);
-    close(stdout_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[0]);
-    close(stderr_pipe[1]);
+    sandbox_close(stdin_pipe[0]);
+    sandbox_close(stdin_pipe[1]);
+    sandbox_close(stdout_pipe[0]);
+    sandbox_close(stdout_pipe[1]);
+    sandbox_close(stderr_pipe[0]);
+    sandbox_close(stderr_pipe[1]);
     return status;
   }
 
@@ -4502,7 +4531,7 @@ tor_spawn_background(const char *const filename, const char **argv,
 
   /* Return read end of the pipes to caller, and close write end */
   process_handle->stdout_pipe = stdout_pipe[0];
-  retval = close(stdout_pipe[1]);
+  retval = sandbox_close(stdout_pipe[1]);
 
   if (-1 == retval) {
     log_warn(LD_GENERAL,
@@ -4515,7 +4544,7 @@ tor_spawn_background(const char *const filename, const char **argv,
                                                     process_handle);
 
   process_handle->stderr_pipe = stderr_pipe[0];
-  retval = close(stderr_pipe[1]);
+  retval = sandbox_close(stderr_pipe[1]);
 
   if (-1 == retval) {
     log_warn(LD_GENERAL,
@@ -4525,7 +4554,7 @@ tor_spawn_background(const char *const filename, const char **argv,
 
   /* Return write end of the stdin pipe to caller, and close the read end */
   process_handle->stdin_pipe = stdin_pipe[1];
-  retval = close(stdin_pipe[0]);
+  retval = sandbox_close(stdin_pipe[0]);
 
   if (-1 == retval) {
     log_warn(LD_GENERAL,
@@ -4587,9 +4616,9 @@ tor_process_handle_destroy,(process_handle_t *process_handle,
   if (process_handle->stdin_pipe)
     CloseHandle(process_handle->stdin_pipe);
 #else /* !(defined(_WIN32)) */
-  close(process_handle->stdout_pipe);
-  close(process_handle->stderr_pipe);
-  close(process_handle->stdin_pipe);
+  sandbox_close(process_handle->stdout_pipe);
+  sandbox_close(process_handle->stderr_pipe);
+  sandbox_close(process_handle->stdin_pipe);
 
   clear_waitpid_callback(process_handle->waitpid_cb);
 #endif /* defined(_WIN32) */

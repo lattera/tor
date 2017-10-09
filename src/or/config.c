@@ -7811,13 +7811,13 @@ remove_file_if_very_old(const char *fname, time_t now)
   struct stat st;
 
   log_debug(LD_FS, "stat()ing %s", fname);
-  if (stat(sandbox_intern_string(fname), &st)==0 &&
+  if (sandbox_stat(sandbox_intern_string(fname), &st)==0 &&
       st.st_mtime < now-VERY_OLD_FILE_AGE) {
     char buf[ISO_TIME_LEN+1];
     format_local_iso_time(buf, st.st_mtime);
     log_notice(LD_GENERAL, "Obsolete file %s hasn't been modified since %s. "
                "Removing it.", fname, buf);
-    if (unlink(fname) != 0) {
+    if (sandbox_unlink(fname) != 0) {
       log_warn(LD_FS, "Failed to unlink %s: %s",
                fname, strerror(errno));
     }

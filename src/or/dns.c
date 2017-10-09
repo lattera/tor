@@ -1375,7 +1375,7 @@ configure_nameservers(int force)
   evdns_set_log_fn(evdns_log_cb);
   if (conf_fname) {
     log_debug(LD_FS, "stat()ing %s", conf_fname);
-    if (stat(sandbox_intern_string(conf_fname), &st)) {
+    if (sandbox_stat(sandbox_intern_string(conf_fname), &st)) {
       log_warn(LD_EXIT, "Unable to stat resolver configuration in '%s': %s",
                conf_fname, strerror(errno));
       goto err;

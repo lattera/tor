@@ -706,7 +706,7 @@ read_bandwidth_usage(void)
     char *fname = get_datadir_fname("bw_accounting");
     int res;
 
-    res = unlink(fname);
+    res = sandbox_unlink(fname);
     if (res != 0 && errno != ENOENT) {
       log_warn(LD_FS,
                "Failed to unlink %s: %s",

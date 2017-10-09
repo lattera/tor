@@ -1562,6 +1562,13 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
   ifc.ifc_buf = NULL;
   int fd;
   smartlist_t *result = NULL;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+
+  cap_rights_init(&rights, CAP_IOCTL);
+#else
+  char rights;
+#endif
 
   /* This interface, AFAICT, only supports AF_INET addresses,
    * except on AIX. For Solaris, we could use SIOCGLIFCONF. */
@@ -1575,7 +1582,7 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
   else if (family != AF_INET)
     return NULL;
 
-  fd = socket(family, SOCK_DGRAM, 0);
+  fd = sandbox_socket(family, SOCK_DGRAM, 0, &rights);
   if (fd < 0) {
     tor_log(severity, LD_NET, "socket failed: %s", strerror(errno));
     goto done;
@@ -1600,7 +1607,7 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
 
  done:
   if (fd >= 0)
-    close(fd);
+    sandbox_close(fd);
   tor_free(ifc.ifc_buf);
   return result;
 }

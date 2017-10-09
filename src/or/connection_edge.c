@@ -2064,10 +2064,10 @@ get_pf_socket(void)
 
 #if defined(OpenBSD)
   /* only works on OpenBSD */
-  pf = tor_open_cloexec("/dev/pf", O_RDONLY, 0);
+  pf = tor_open_cloexec("/dev/pf", O_RDONLY, 0, NULL);
 #else
   /* works on NetBSD and FreeBSD */
-  pf = tor_open_cloexec("/dev/pf", O_RDWR, 0);
+  pf = tor_open_cloexec("/dev/pf", O_RDWR, 0, NULL);
 #endif /* defined(OpenBSD) */
 
   if (pf < 0) {

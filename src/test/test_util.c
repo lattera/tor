@@ -4065,7 +4065,7 @@ test_util_ftruncate(void *ptr)
 
   fname = get_fname("ftruncate");
 
-  fd = tor_open_cloexec(fname, O_WRONLY|O_CREAT, 0600);
+  fd = tor_open_cloexec(fname, O_WRONLY|O_CREAT, 0600, NULL);
   tt_int_op(fd, OP_GE, 0);
 
   /* Make the file be there. */

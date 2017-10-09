@@ -11,6 +11,8 @@
 
 #include "orconfig.h"
 
+#if !HAVE_SYS_CAPSICUM_H
+
 #ifndef _LARGEFILE64_SOURCE
 /**
  * Temporarily required for O_LARGEFILE flag. Needs to be removed
@@ -1875,58 +1877,9 @@ sandbox_init(sandbox_cfg_t *cfg)
 #endif /* defined(USE_LIBSECCOMP) || ... */
 }
 
-#ifndef USE_LIBSECCOMP
-int
-sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
-{
-  (void)cfg; (void)file;
-  return 0;
-}
-
-int
-sandbox_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
-{
-  (void)cfg; (void)file;
-  return 0;
-}
-
-int
-sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
-{
-  (void)cfg; (void)file;
-  return 0;
-}
-
-int
-sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
-{
-  (void)cfg; (void)file;
-  return 0;
-}
-
-int
-sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
-{
-  (void)cfg; (void)file;
-  return 0;
-}
-
-int
-sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
-{
-  (void)cfg; (void)file1; (void)file2;
-  return 0;
-}
-
-int
-sandbox_is_active(void)
-{
-  return 0;
-}
-
-void
-sandbox_disable_getaddrinfo_cache(void)
+#else
+static void
+sandbox_unused_function(void)
 {
 }
-#endif /* !defined(USE_LIBSECCOMP) */
-
+#endif /* !HAVE_SYS_CAPSICUM_H */

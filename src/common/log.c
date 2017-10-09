@@ -35,6 +35,7 @@
 #define LOG_PRIVATE
 #include "torlog.h"
 #include "container.h"
+#include "sandbox.h"
 
 /** Given a severity, yields an index into log_severity_list_t.masks to use
  * for that severity. */
@@ -799,7 +800,7 @@ static void
 close_log(logfile_t *victim)
 {
   if (victim->needs_close && victim->fd >= 0) {
-    close(victim->fd);
+    sandbox_close(victim->fd);
     victim->fd = -1;
   } else if (victim->is_syslog) {
 #ifdef HAVE_SYSLOG_H
@@ -1086,11 +1087,11 @@ add_file_log(const log_severity_list_t *severity, const char *filename,
   int open_flags = O_WRONLY|O_CREAT;
   open_flags |= truncate_log ? O_TRUNC : O_APPEND;
 
-  fd = tor_open_cloexec(filename, open_flags, 0640);
+  fd = tor_open_cloexec(filename, open_flags, 0640, NULL);
   if (fd<0)
     return -1;
   if (tor_fd_seekend(fd)<0) {
-    close(fd);
+    sandbox_close(fd);
     return -1;
   }
 

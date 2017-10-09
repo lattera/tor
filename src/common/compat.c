@@ -148,32 +148,70 @@ static int max_sockets = 1024;
 /** As open(path, flags, mode), but return an fd with the close-on-exec mode
  * set. */
 int
-tor_open_cloexec(const char *path, int flags, unsigned mode)
+tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
 {
   int fd;
   const char *p = sandbox_intern_string(path);
+#ifdef HAVE_SYS_CAPSICUM_H
+  int dealloc_rights;
+  cap_rights_t *rights;
+
+  rights = rightsp;
+
+  if (rights == NULL) {
+	  rights = calloc(1, sizeof(cap_rights_t));
+	  if (rights == NULL) {
+		  return (-1);
+	  }
+    cap_rights_init(rights);
+    dealloc_rights = 1;
+  } else
+    dealloc_rights = 0;
+
+  cap_rights_set(rights, CAP_FCNTL, CAP_SEEK, CAP_EVENT, CAP_FSTAT);
+  if (flags == O_RDONLY) {
+	  cap_rights_set(rights, CAP_READ);
+  } else if ((flags &  O_WRONLY) == O_WRONLY) {
+	  cap_rights_set(rights, CAP_WRITE);
+  } else {
+	  cap_rights_set(rights, CAP_READ, CAP_WRITE);
+  }
+
+  if ((flags & O_CREAT) == O_CREAT) {
+    cap_rights_set(rights, CAP_CREATE);
+  }
+#else
+  void *rights = rightsp;
+#endif
+
 #ifdef O_CLOEXEC
-  fd = open(p, flags|O_CLOEXEC, mode);
-  if (fd >= 0)
-    return fd;
+  fd = sandbox_open(p, flags|O_CLOEXEC, mode, rights);
+  if (fd >= 0) {
+    goto end;
+  }
   /* If we got an error, see if it is EINVAL. EINVAL might indicate that,
    * even though we were built on a system with O_CLOEXEC support, we
    * are running on one without. */
-  if (errno != EINVAL)
-    return -1;
+  if (errno != EINVAL) {
+    goto end;
+  }
 #endif /* defined(O_CLOEXEC) */
 
   log_debug(LD_FS, "Opening %s with flags %x", p, flags);
-  fd = open(p, flags, mode);
+  fd = sandbox_open(p, flags, mode, rights);
 #ifdef FD_CLOEXEC
   if (fd >= 0) {
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
       log_warn(LD_FS,"Couldn't set FD_CLOEXEC: %s", strerror(errno));
-      close(fd);
-      return -1;
+      sandbox_close(fd);
+      fd = -1;
+      goto end;
     }
   }
 #endif /* defined(FD_CLOEXEC) */
+end:
+  if (dealloc_rights)
+    free(rights);
   return fd;
 }
 
@@ -182,10 +220,31 @@ tor_open_cloexec(const char *path, int flags, unsigned mode)
 FILE *
 tor_fopen_cloexec(const char *path, const char *mode)
 {
-  FILE *result = fopen(path, mode);
+  int fd, flags;
+  FILE *result;
+  mode_t fdmode;
+
+  flags = 0;
+  if ((strchr(mode, 'r') && strchr(mode, 'w')) || strchr(mode, 'a'))
+    flags = O_RDWR;
+  else if (strchr(mode, 'r'))
+    flags = O_RDONLY;
+  else if (strchr(mode, 'w'))
+    flags = O_WRONLY;
+
+  if (flags == O_RDWR || flags == O_WRONLY) {
+    flags |= O_CREAT;
+    fdmode = 0666;
+  }
+
+  result = NULL;
+  fd = sandbox_open(path, flags, fdmode, NULL);
+  if (fd != -1)
+    result = fdopen(fd, mode);
+
 #ifdef FD_CLOEXEC
   if (result != NULL) {
-    if (fcntl(fileno(result), F_SETFD, FD_CLOEXEC) == -1) {
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
       log_warn(LD_FS,"Couldn't set FD_CLOEXEC: %s", strerror(errno));
       fclose(result);
       return NULL;
@@ -200,7 +259,7 @@ int
 tor_rename(const char *path_old, const char *path_new)
 {
   log_debug(LD_FS, "Renaming %s to %s", path_old, path_new);
-  return rename(sandbox_intern_string(path_old),
+  return sandbox_rename(sandbox_intern_string(path_old),
                 sandbox_intern_string(path_new));
 }
 
@@ -226,10 +285,17 @@ tor_mmap_file(const char *filename)
   tor_mmap_t *res;
   size_t size, filesize;
   struct stat st;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+
+  cap_rights_init(&rights, CAP_MMAP, CAP_MMAP_R);
+#else
+  char rights;
+#endif
 
   tor_assert(filename);
 
-  fd = tor_open_cloexec(filename, O_RDONLY, 0);
+  fd = tor_open_cloexec(filename, O_RDONLY, 0, &rights);
   if (fd<0) {
     int save_errno = errno;
     int severity = (errno == ENOENT) ? LOG_INFO : LOG_WARN;
@@ -246,7 +312,7 @@ tor_mmap_file(const char *filename)
     log_warn(LD_FS,
              "Couldn't fstat opened descriptor for \"%s\" during mmap: %s",
              filename, strerror(errno));
-    close(fd);
+    sandbox_close(fd);
     errno = save_errno;
     return NULL;
   }
@@ -262,7 +328,7 @@ tor_mmap_file(const char *filename)
   if (st.st_size > SSIZE_T_CEILING || (off_t)size < st.st_size) {
     log_warn(LD_FS, "File \"%s\" is too large. Ignoring.",filename);
     errno = EFBIG;
-    close(fd);
+    sandbox_close(fd);
     return NULL;
   }
   if (!size) {
@@ -270,12 +336,12 @@ tor_mmap_file(const char *filename)
      * return NULL, and bad things will happen. So just fail. */
     log_info(LD_FS,"File \"%s\" is empty. Ignoring.",filename);
     errno = ERANGE;
-    close(fd);
+    sandbox_close(fd);
     return NULL;
   }
 
   string = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
+  sandbox_close(fd);
   if (string == MAP_FAILED) {
     int save_errno = errno;
     log_warn(LD_FS,"Could not mmap file \"%s\": %s", filename,
@@ -860,7 +926,7 @@ replace_file(const char *from, const char *to)
       break;
     case FN_FILE:
     case FN_EMPTY:
-      if (unlink(to)) return -1;
+      if (sandbox_unlink(to)) return -1;
       break;
     case FN_ERROR:
       return -1;
@@ -911,10 +977,18 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
 {
   tor_lockfile_t *result;
   int fd;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+
+  cap_rights_init(&rights, CAP_FLOCK);
+#else
+  char rights;
+#endif
+
   *locked_out = 0;
 
   log_info(LD_FS, "Locking \"%s\"", filename);
-  fd = tor_open_cloexec(filename, O_RDWR|O_CREAT|O_TRUNC, 0600);
+  fd = tor_open_cloexec(filename, O_RDWR|O_CREAT|O_TRUNC, 0600, &rights);
   if (fd < 0) {
     log_warn(LD_FS,"Couldn't open \"%s\" for locking: %s", filename,
              strerror(errno));
@@ -928,7 +1002,7 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
       log_warn(LD_FS,"Couldn't lock \"%s\": %s", filename, strerror(errno));
     else
       *locked_out = 1;
-    close(fd);
+    sandbox_close(fd);
     return NULL;
   }
 #elif defined(HAVE_FLOCK)
@@ -937,7 +1011,7 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
       log_warn(LD_FS,"Couldn't lock \"%s\": %s", filename, strerror(errno));
     else
       *locked_out = 1;
-    close(fd);
+    sandbox_close(fd);
     return NULL;
   }
 #else
@@ -951,7 +1025,7 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
         log_warn(LD_FS, "Couldn't lock \"%s\": %s", filename, strerror(errno));
       else
         *locked_out = 1;
-      close(fd);
+      sandbox_close(fd);
       return NULL;
     }
   }
@@ -985,7 +1059,7 @@ tor_lockfile_unlock(tor_lockfile_t *lockfile)
   /* Closing the lockfile is sufficient. */
 #endif /* defined(_WIN32) || ... */
 
-  close(lockfile->fd);
+  sandbox_close(lockfile->fd);
   lockfile->fd = -1;
   tor_free(lockfile->filename);
   tor_free(lockfile);
@@ -1114,7 +1188,7 @@ tor_close_socket_simple(tor_socket_t s)
   #if defined(_WIN32)
     r = closesocket(s);
   #else
-    r = close(s);
+    r = sandbox_close(s);
   #endif
 
   if (r != 0) {
@@ -1202,7 +1276,7 @@ MOCK_IMPL(tor_socket_t,
 tor_connect_socket,(tor_socket_t sock, const struct sockaddr *address,
                      socklen_t address_len))
 {
-  return connect(sock,address,address_len);
+  return sandbox_connect(sock,address,address_len);
 }
 
 /** As socket(), but creates a nonblocking socket and
@@ -1222,6 +1296,28 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
                                 int cloexec, int nonblock)
 {
   tor_socket_t s;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+
+  cap_rights_init(&rights,
+    CAP_ACCEPT,
+    CAP_BIND,
+    CAP_CONNECT,
+    CAP_EVENT,
+    CAP_FCNTL,
+    CAP_GETPEERNAME,
+    CAP_GETSOCKNAME,
+    CAP_GETSOCKOPT,
+    CAP_IOCTL,
+    CAP_KQUEUE,
+    CAP_LISTEN,
+    CAP_RECV,
+    CAP_SEEK,
+    CAP_SEND,
+    CAP_SETSOCKOPT);
+#else
+  char rights;
+#endif
 
   /* We are about to create a new file descriptor so make sure we have
    * enough of them. */
@@ -1237,7 +1333,7 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
 #if defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK)
   int ext_flags = (cloexec ? SOCK_CLOEXEC : 0) |
                   (nonblock ? SOCK_NONBLOCK : 0);
-  s = socket(domain, type|ext_flags, protocol);
+  s = sandbox_socket(domain, type|ext_flags, protocol, &rights);
   if (SOCKET_OK(s))
     goto socket_ok;
   /* If we got an error, see if it is EINVAL. EINVAL might indicate that,
@@ -1247,7 +1343,7 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
     return s;
 #endif /* defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK) */
 
-  s = socket(domain, type, protocol);
+  s = sandbox_socket(domain, type, protocol, &rights);
   if (! SOCKET_OK(s))
     return s;
 
@@ -1595,7 +1691,7 @@ tor_ersatz_socketpair(int family, int type, int protocol, tor_socket_t fd[2])
       goto tidy_up_and_fail;
     if (size != SIZEOF_SOCKADDR (connect_addr->sa_family))
       goto abort_tidy_up_and_fail;
-    if (connect(connector, connect_addr, size) == -1)
+    if (sandbox_connect(connector, connect_addr, size) == -1)
       goto tidy_up_and_fail;
 
     size = sizeof(listen_addr_ss);
@@ -3017,7 +3113,7 @@ struct tm *
 tor_gmtime_r(const time_t *timep, struct tm *result)
 {
   struct tm *r;
-  r = gmtime_r(timep, result);
+  r = sandbox_gmtime_r(timep, result);
   return correct_tm(0, timep, result, r);
 }
 #elif defined(TIME_FNS_NEED_LOCKS)
@@ -3029,7 +3125,7 @@ tor_gmtime_r(const time_t *timep, struct tm *result)
   if (!m) { m=tor_mutex_new(); }
   tor_assert(result);
   tor_mutex_acquire(m);
-  r = gmtime(timep);
+  r = sandbox_gmtime(timep);
   if (r)
     memcpy(result, r, sizeof(struct tm));
   tor_mutex_release(m);
@@ -3041,7 +3137,7 @@ tor_gmtime_r(const time_t *timep, struct tm *result)
 {
   struct tm *r;
   tor_assert(result);
-  r = gmtime(timep);
+  r = sandbox_gmtime(timep);
   if (r)
     memcpy(result, r, sizeof(struct tm));
   return correct_tm(0, timep, result, r);
@@ -3334,7 +3430,7 @@ get_total_system_memory_impl(void)
   char *s = NULL;
   const char *cp;
   size_t file_size=0;
-  if (-1 == (fd = tor_open_cloexec("/proc/meminfo",O_RDONLY,0)))
+  if (-1 == (fd = tor_open_cloexec("/proc/meminfo",O_RDONLY,0, NULL)))
     return 0;
   s = read_file_to_str_until_eof(fd, 65536, &file_size);
   if (!s)
@@ -3346,14 +3442,14 @@ get_total_system_memory_impl(void)
   if (sscanf(cp, "MemTotal: %llu kB\n", &result) != 1)
     goto err;
 
-  close(fd);
+  sandbox_close(fd);
   tor_free(s);
   return result * 1024;
 
   /* LCOV_EXCL_START Can't reach this unless proc is broken. */
  err:
   tor_free(s);
-  close(fd);
+  sandbox_close(fd);
   return 0;
   /* LCOV_EXCL_STOP */
 #elif defined (_WIN32)

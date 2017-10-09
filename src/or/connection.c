@@ -565,7 +565,7 @@ connection_free_(connection_t *conn)
        * and listeners at the same time */
       tor_assert(conn_listener_type_supports_af_unix(conn->type));
 
-      if (unlink(conn->address) < 0 && errno != ENOENT) {
+      if (sandbox_unlink(conn->address) < 0 && errno != ENOENT) {
         log_warn(LD_NET, "Could not unlink %s: %s", conn->address,
                          strerror(errno));
       }
@@ -1283,7 +1283,7 @@ connection_listener_new(const struct sockaddr *listensockaddr,
 
     tor_addr_make_unspec(&addr);
 
-    if (unlink(address) < 0 && errno != ENOENT) {
+    if (sandbox_unlink(address) < 0 && errno != ENOENT) {
       log_warn(LD_NET, "Could not unlink %s: %s", address,
                        strerror(errno));
       goto err;
@@ -1801,14 +1801,14 @@ connection_connect_sockaddr,(connection_t *conn,
   if (options->ConstrainedSockets)
     set_constrained_socket_buffers(s, (int)options->ConstrainedSockSize);
 
-  if (connect(s, sa, sa_len) < 0) {
+  if (sandbox_connect(s, sa, sa_len) < 0) {
     int e = tor_socket_errno(s);
     if (!ERRNO_IS_CONN_EINPROGRESS(e)) {
       /* yuck. kill it. */
       *socket_error = e;
       log_info(LD_NET,
-               "connect() to socket failed: %s",
-               tor_socket_strerror(e));
+               "connect() to socket %d failed: %s",
+               s, tor_socket_strerror(e));
       tor_close_socket(s);
       return -1;
     } else {

@@ -2498,7 +2498,7 @@ do_main_loop(void)
      * upgraded.
      */
     char *fname = get_datadir_fname("key-pinning-entries");
-    unlink(fname);
+    sandbox_unlink(fname);
     tor_free(fname);
   }
 
@@ -3313,13 +3313,13 @@ tor_cleanup(void)
     /* Remove our pid file. We don't care if there was an error when we
      * unlink, nothing we could do about it anyways. */
     if (options->PidFile) {
-      if (unlink(options->PidFile) != 0) {
+      if (sandbox_unlink(options->PidFile) != 0) {
         log_warn(LD_FS, "Couldn't unlink pid file %s: %s",
                  options->PidFile, strerror(errno));
       }
     }
     if (options->ControlPortWriteToFile) {
-      if (unlink(options->ControlPortWriteToFile) != 0) {
+      if (sandbox_unlink(options->ControlPortWriteToFile) != 0) {
         log_warn(LD_FS, "Couldn't unlink control port file %s: %s",
                  options->ControlPortWriteToFile,
                  strerror(errno));
@@ -3351,6 +3351,7 @@ tor_cleanup(void)
   dmalloc_log_unfreed();
   dmalloc_shutdown();
 #endif
+  sandbox_cleanup();
 }
 
 /** Read/create keys as needed, and echo our fingerprint to stdout. */
@@ -3429,278 +3430,6 @@ do_dump_config(void)
   tor_free(opts);
 
   return 0;
-}
-
-static void
-init_addrinfo(void)
-{
-  if (! server_mode(get_options()) ||
-      (get_options()->Address && strlen(get_options()->Address) > 0)) {
-    /* We don't need to seed our own hostname, because we won't be calling
-     * resolve_my_address on it.
-     */
-    return;
-  }
-  char hname[256];
-
-  // host name to sandbox
-  gethostname(hname, sizeof(hname));
-  sandbox_add_addrinfo(hname);
-}
-
-static sandbox_cfg_t*
-sandbox_init_filter(void)
-{
-  const or_options_t *options = get_options();
-  sandbox_cfg_t *cfg = sandbox_cfg_new();
-  int i;
-
-  sandbox_cfg_allow_openat_filename(&cfg,
-      get_datadir_fname("cached-status"));
-
-#define OPEN(name)                              \
-  sandbox_cfg_allow_open_filename(&cfg, tor_strdup(name))
-
-#define OPEN_DATADIR(name)                      \
-  sandbox_cfg_allow_open_filename(&cfg, get_datadir_fname(name))
-
-#define OPEN_DATADIR2(name, name2)                       \
-  sandbox_cfg_allow_open_filename(&cfg, get_datadir_fname2((name), (name2)))
-
-#define OPEN_DATADIR_SUFFIX(name, suffix) do {  \
-    OPEN_DATADIR(name);                         \
-    OPEN_DATADIR(name suffix);                  \
-  } while (0)
-
-#define OPEN_DATADIR2_SUFFIX(name, name2, suffix) do {  \
-    OPEN_DATADIR2(name, name2);                         \
-    OPEN_DATADIR2(name, name2 suffix);                  \
-  } while (0)
-
-  OPEN(options->DataDirectory);
-  OPEN_DATADIR("keys");
-  OPEN_DATADIR_SUFFIX("cached-certs", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-consensus", ".tmp");
-  OPEN_DATADIR_SUFFIX("unverified-consensus", ".tmp");
-  OPEN_DATADIR_SUFFIX("unverified-microdesc-consensus", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-microdesc-consensus", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-microdescs", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-microdescs.new", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-descriptors", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-descriptors.new", ".tmp");
-  OPEN_DATADIR("cached-descriptors.tmp.tmp");
-  OPEN_DATADIR_SUFFIX("cached-extrainfo", ".tmp");
-  OPEN_DATADIR_SUFFIX("cached-extrainfo.new", ".tmp");
-  OPEN_DATADIR("cached-extrainfo.tmp.tmp");
-  OPEN_DATADIR_SUFFIX("state", ".tmp");
-  OPEN_DATADIR_SUFFIX("sr-state", ".tmp");
-  OPEN_DATADIR_SUFFIX("unparseable-desc", ".tmp");
-  OPEN_DATADIR_SUFFIX("v3-status-votes", ".tmp");
-  OPEN_DATADIR("key-pinning-journal");
-  OPEN("/dev/srandom");
-  OPEN("/dev/urandom");
-  OPEN("/dev/random");
-  OPEN("/etc/hosts");
-  OPEN("/proc/meminfo");
-
-  if (options->BridgeAuthoritativeDir)
-    OPEN_DATADIR_SUFFIX("networkstatus-bridges", ".tmp");
-
-  if (authdir_mode(options))
-    OPEN_DATADIR("approved-routers");
-
-  if (options->ServerDNSResolvConfFile)
-    sandbox_cfg_allow_open_filename(&cfg,
-                                tor_strdup(options->ServerDNSResolvConfFile));
-  else
-    sandbox_cfg_allow_open_filename(&cfg, tor_strdup("/etc/resolv.conf"));
-
-  for (i = 0; i < 2; ++i) {
-    if (get_torrc_fname(i)) {
-      sandbox_cfg_allow_open_filename(&cfg, tor_strdup(get_torrc_fname(i)));
-    }
-  }
-
-#define RENAME_SUFFIX(name, suffix)        \
-  sandbox_cfg_allow_rename(&cfg,           \
-      get_datadir_fname(name suffix),      \
-      get_datadir_fname(name))
-
-#define RENAME_SUFFIX2(prefix, name, suffix) \
-  sandbox_cfg_allow_rename(&cfg,                                        \
-                           get_datadir_fname2(prefix, name suffix),     \
-                           get_datadir_fname2(prefix, name))
-
-  RENAME_SUFFIX("cached-certs", ".tmp");
-  RENAME_SUFFIX("cached-consensus", ".tmp");
-  RENAME_SUFFIX("unverified-consensus", ".tmp");
-  RENAME_SUFFIX("unverified-microdesc-consensus", ".tmp");
-  RENAME_SUFFIX("cached-microdesc-consensus", ".tmp");
-  RENAME_SUFFIX("cached-microdescs", ".tmp");
-  RENAME_SUFFIX("cached-microdescs", ".new");
-  RENAME_SUFFIX("cached-microdescs.new", ".tmp");
-  RENAME_SUFFIX("cached-descriptors", ".tmp");
-  RENAME_SUFFIX("cached-descriptors", ".new");
-  RENAME_SUFFIX("cached-descriptors.new", ".tmp");
-  RENAME_SUFFIX("cached-extrainfo", ".tmp");
-  RENAME_SUFFIX("cached-extrainfo", ".new");
-  RENAME_SUFFIX("cached-extrainfo.new", ".tmp");
-  RENAME_SUFFIX("state", ".tmp");
-  RENAME_SUFFIX("sr-state", ".tmp");
-  RENAME_SUFFIX("unparseable-desc", ".tmp");
-  RENAME_SUFFIX("v3-status-votes", ".tmp");
-
-  if (options->BridgeAuthoritativeDir)
-    RENAME_SUFFIX("networkstatus-bridges", ".tmp");
-
-#define STAT_DATADIR(name)                      \
-  sandbox_cfg_allow_stat_filename(&cfg, get_datadir_fname(name))
-
-#define STAT_DATADIR2(name, name2)                                      \
-  sandbox_cfg_allow_stat_filename(&cfg, get_datadir_fname2((name), (name2)))
-
-  STAT_DATADIR(NULL);
-  STAT_DATADIR("lock");
-  STAT_DATADIR("state");
-  STAT_DATADIR("router-stability");
-  STAT_DATADIR("cached-extrainfo.new");
-
-  {
-    smartlist_t *files = smartlist_new();
-    tor_log_get_logfile_names(files);
-    SMARTLIST_FOREACH(files, char *, file_name, {
-      /* steals reference */
-      sandbox_cfg_allow_open_filename(&cfg, file_name);
-    });
-    smartlist_free(files);
-  }
-
-  {
-    smartlist_t *files = smartlist_new();
-    smartlist_t *dirs = smartlist_new();
-    hs_service_lists_fnames_for_sandbox(files, dirs);
-    SMARTLIST_FOREACH(files, char *, file_name, {
-      char *tmp_name = NULL;
-      tor_asprintf(&tmp_name, "%s.tmp", file_name);
-      sandbox_cfg_allow_rename(&cfg,
-                               tor_strdup(tmp_name), tor_strdup(file_name));
-      /* steals references */
-      sandbox_cfg_allow_open_filename(&cfg, file_name);
-      sandbox_cfg_allow_open_filename(&cfg, tmp_name);
-    });
-    SMARTLIST_FOREACH(dirs, char *, dir, {
-      /* steals reference */
-      sandbox_cfg_allow_stat_filename(&cfg, dir);
-    });
-    smartlist_free(files);
-    smartlist_free(dirs);
-  }
-
-  {
-    char *fname;
-    if ((fname = get_controller_cookie_file_name())) {
-      sandbox_cfg_allow_open_filename(&cfg, fname);
-    }
-    if ((fname = get_ext_or_auth_cookie_file_name())) {
-      sandbox_cfg_allow_open_filename(&cfg, fname);
-    }
-  }
-
-  SMARTLIST_FOREACH_BEGIN(get_configured_ports(), port_cfg_t *, port) {
-    if (!port->is_unix_addr)
-      continue;
-    /* When we open an AF_UNIX address, we want permission to open the
-     * directory that holds it. */
-    char *dirname = tor_strdup(port->unix_addr);
-    if (get_parent_directory(dirname) == 0) {
-      OPEN(dirname);
-    }
-    tor_free(dirname);
-    sandbox_cfg_allow_chmod_filename(&cfg, tor_strdup(port->unix_addr));
-    sandbox_cfg_allow_chown_filename(&cfg, tor_strdup(port->unix_addr));
-  } SMARTLIST_FOREACH_END(port);
-
-  if (options->DirPortFrontPage) {
-    sandbox_cfg_allow_open_filename(&cfg,
-                                    tor_strdup(options->DirPortFrontPage));
-  }
-
-  // orport
-  if (server_mode(get_options())) {
-
-    OPEN_DATADIR2_SUFFIX("keys", "secret_id_key", ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "secret_onion_key", ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "secret_onion_key_ntor", ".tmp");
-    OPEN_DATADIR2("keys", "secret_id_key.old");
-    OPEN_DATADIR2("keys", "secret_onion_key.old");
-    OPEN_DATADIR2("keys", "secret_onion_key_ntor.old");
-
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_master_id_secret_key", ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_master_id_secret_key_encrypted",
-                         ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_master_id_public_key", ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_signing_secret_key", ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_signing_secret_key_encrypted",
-                         ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_signing_public_key", ".tmp");
-    OPEN_DATADIR2_SUFFIX("keys", "ed25519_signing_cert", ".tmp");
-
-    OPEN_DATADIR2_SUFFIX("stats", "bridge-stats", ".tmp");
-    OPEN_DATADIR2_SUFFIX("stats", "dirreq-stats", ".tmp");
-
-    OPEN_DATADIR2_SUFFIX("stats", "entry-stats", ".tmp");
-    OPEN_DATADIR2_SUFFIX("stats", "exit-stats", ".tmp");
-    OPEN_DATADIR2_SUFFIX("stats", "buffer-stats", ".tmp");
-    OPEN_DATADIR2_SUFFIX("stats", "conn-stats", ".tmp");
-    OPEN_DATADIR2_SUFFIX("stats", "hidserv-stats", ".tmp");
-
-    OPEN_DATADIR("approved-routers");
-    OPEN_DATADIR_SUFFIX("fingerprint", ".tmp");
-    OPEN_DATADIR_SUFFIX("hashed-fingerprint", ".tmp");
-    OPEN_DATADIR_SUFFIX("router-stability", ".tmp");
-
-    OPEN("/etc/resolv.conf");
-
-    RENAME_SUFFIX("fingerprint", ".tmp");
-    RENAME_SUFFIX2("keys", "secret_onion_key_ntor", ".tmp");
-    RENAME_SUFFIX2("keys", "secret_id_key", ".tmp");
-    RENAME_SUFFIX2("keys", "secret_id_key.old", ".tmp");
-    RENAME_SUFFIX2("keys", "secret_onion_key", ".tmp");
-    RENAME_SUFFIX2("keys", "secret_onion_key.old", ".tmp");
-    RENAME_SUFFIX2("stats", "bridge-stats", ".tmp");
-    RENAME_SUFFIX2("stats", "dirreq-stats", ".tmp");
-    RENAME_SUFFIX2("stats", "entry-stats", ".tmp");
-    RENAME_SUFFIX2("stats", "exit-stats", ".tmp");
-    RENAME_SUFFIX2("stats", "buffer-stats", ".tmp");
-    RENAME_SUFFIX2("stats", "conn-stats", ".tmp");
-    RENAME_SUFFIX2("stats", "hidserv-stats", ".tmp");
-    RENAME_SUFFIX("hashed-fingerprint", ".tmp");
-    RENAME_SUFFIX("router-stability", ".tmp");
-
-    RENAME_SUFFIX2("keys", "ed25519_master_id_secret_key", ".tmp");
-    RENAME_SUFFIX2("keys", "ed25519_master_id_secret_key_encrypted", ".tmp");
-    RENAME_SUFFIX2("keys", "ed25519_master_id_public_key", ".tmp");
-    RENAME_SUFFIX2("keys", "ed25519_signing_secret_key", ".tmp");
-    RENAME_SUFFIX2("keys", "ed25519_signing_cert", ".tmp");
-
-    sandbox_cfg_allow_rename(&cfg,
-             get_datadir_fname2("keys", "secret_onion_key"),
-             get_datadir_fname2("keys", "secret_onion_key.old"));
-    sandbox_cfg_allow_rename(&cfg,
-             get_datadir_fname2("keys", "secret_onion_key_ntor"),
-             get_datadir_fname2("keys", "secret_onion_key_ntor.old"));
-
-    STAT_DATADIR("keys");
-    OPEN_DATADIR("stats");
-    STAT_DATADIR("stats");
-    STAT_DATADIR2("stats", "dirreq-stats");
-
-    consdiffmgr_register_with_sandbox(&cfg);
-  }
-
-  init_addrinfo();
-
-  return cfg;
 }
 
 /** Main entry point for the Tor process.  Called from main(). */

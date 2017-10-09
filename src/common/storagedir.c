@@ -118,7 +118,7 @@ storage_dir_clean_tmpfiles(storage_dir_t *d)
       continue;
     char *path = NULL;
     tor_asprintf(&path, "%s/%s", d->directory, fname);
-    if (unlink(sandbox_intern_string(path))) {
+    if (sandbox_unlink(sandbox_intern_string(path))) {
       log_warn(LD_FS, "Unable to unlink %s while cleaning "
                "temporary files: %s", escaped(path), strerror(errno));
       tor_free(path);
@@ -176,7 +176,7 @@ storage_dir_get_usage(storage_dir_t *d)
     char *path = NULL;
     struct stat st;
     tor_asprintf(&path, "%s/%s", d->directory, cp);
-    if (stat(sandbox_intern_string(path), &st) == 0) {
+    if (sandbox_stat(sandbox_intern_string(path), &st) == 0) {
       total += st.st_size;
     }
     tor_free(path);
@@ -449,11 +449,11 @@ storage_dir_remove_file(storage_dir_t *d,
   uint64_t size = 0;
   if (d->usage_known) {
     struct stat st;
-    if (stat(ipath, &st) == 0) {
+    if (sandbox_stat(ipath, &st) == 0) {
       size = st.st_size;
     }
   }
-  if (unlink(ipath) == 0) {
+  if (sandbox_unlink(ipath) == 0) {
     storage_dir_reduce_usage(d, size);
   } else {
     log_warn(LD_FS, "Unable to unlink %s while removing file: %s",
@@ -523,7 +523,7 @@ storage_dir_shrink(storage_dir_t *d,
     shrinking_dir_entry_t *ent = &ents[fname_sl_idx];
     struct stat st;
     tor_asprintf(&ent->path, "%s/%s", d->directory, fname);
-    if (stat(sandbox_intern_string(ent->path), &st) == 0) {
+    if (sandbox_stat(sandbox_intern_string(ent->path), &st) == 0) {
       ent->mtime = st.st_mtime;
       ent->size = st.st_size;
     }
@@ -533,7 +533,7 @@ storage_dir_shrink(storage_dir_t *d,
 
   int idx = 0;
   while ((d->usage > target_size || min_to_remove > 0) && idx < n) {
-    if (unlink(sandbox_intern_string(ents[idx].path)) == 0) {
+    if (sandbox_unlink(sandbox_intern_string(ents[idx].path)) == 0) {
       storage_dir_reduce_usage(d, ents[idx].size);
       --min_to_remove;
     }

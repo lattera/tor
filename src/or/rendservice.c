@@ -1216,7 +1216,7 @@ poison_new_single_onion_hidden_service_dir_impl(const rend_service_t *service,
               poison_fname);
     break;
   case FN_NOENT:
-    fd = tor_open_cloexec(poison_fname, O_RDWR|O_CREAT|O_TRUNC, 0600);
+    fd = tor_open_cloexec(poison_fname, O_RDWR|O_CREAT|O_TRUNC, 0600, NULL);
     if (fd < 0) {
       log_warn(LD_FS, "Could not create single onion poison file %s",
                poison_fname);

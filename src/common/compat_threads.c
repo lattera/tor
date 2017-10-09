@@ -264,7 +264,7 @@ alert_sockets_create(alert_sockets_t *socks_out, uint32_t flags)
           set_socket_nonblocking(socks[0]) < 0) {
         // LCOV_EXCL_START -- if eventfd succeeds, fcntl will.
         tor_assert_nonfatal_unreached();
-        close(socks[0]);
+        sandbox_close(socks[0]);
         return -1;
         // LCOV_EXCL_STOP
       }
@@ -302,8 +302,8 @@ alert_sockets_create(alert_sockets_t *socks_out, uint32_t flags)
         set_socket_nonblocking(socks[1]) < 0) {
       // LCOV_EXCL_START -- if pipe succeeds, you can fcntl the output
       tor_assert_nonfatal_unreached();
-      close(socks[0]);
-      close(socks[1]);
+      sandbox_close(socks[0]);
+      sandbox_close(socks[1]);
       return -1;
       // LCOV_EXCL_STOP
     }
@@ -345,9 +345,9 @@ alert_sockets_close(alert_sockets_t *socks)
     tor_close_socket(socks->read_fd);
     tor_close_socket(socks->write_fd);
   } else {
-    close(socks->read_fd);
+    sandbox_close(socks->read_fd);
     if (socks->write_fd != socks->read_fd)
-      close(socks->write_fd);
+      sandbox_close(socks->write_fd);
   }
   socks->read_fd = socks->write_fd = -1;
 }
