@@ -260,7 +260,6 @@ void shutdown_backend(void)
 	send_request(&request);
 
 	pdkill(sandboxpid, SIGINT);
-	waitpid(childpid, NULL, 0);
 
 	pthread_mutex_unlock(&sandbox_mtx);
 
