@@ -2628,7 +2628,7 @@ finish_writing_to_file_impl(open_file_t *file_data, int abort_write)
 
   tor_assert(file_data && file_data->filename);
   if (file_data->stdio_file) {
-    if (sandbox_close(file_data->stdio_file)) {
+    if (sandbox_close(fileno(file_data->stdio_file))) {
       log_warn(LD_FS, "Error closing \"%s\": %s", file_data->filename,
                strerror(errno));
       abort_write = r = -1;
