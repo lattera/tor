@@ -750,8 +750,13 @@ sandbox_cfg_new(void)
 int
 sandbox_init(sandbox_cfg_t *cfg)
 {
+  time_t clock;
 
 #if SANDBOX_ENABLED
+  /* Cache timezone data */
+  clock = time(NULL);
+  gmtime(&clock);
+
   pthread_mutex_init(&sandbox_mtx, NULL);
   fork_backend();
 
