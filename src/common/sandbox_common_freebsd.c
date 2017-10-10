@@ -484,6 +484,28 @@ end:
 	return (retval);
 }
 
+void
+sandbox_freeaddrinfo(struct addrinfo *ai)
+{
+	struct addrinfo *next;
+
+	if (!active) {
+		freeaddrinfo(ai);
+		return;
+	}
+
+	while (ai != NULL) {
+		next = ai->ai_next;
+		if (ai->ai_addr != NULL) {
+			memset(ai->ai_addr, 0, ai->ai_addrlen);
+			free(ai->ai_addr);
+		}
+		memset(ai, 0, sizeof(*ai));
+		free(ai);
+		ai = next;
+	}
+}
+
 int
 sandbox_connect(int sockfd, struct sockaddr *name, socklen_t namelen)
 {

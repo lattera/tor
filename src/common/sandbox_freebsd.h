@@ -68,7 +68,6 @@ sandbox_cfg_t *sandbox_init_filter(void);
 #define sandbox_intern_string(s) (s)
 #define sandbox_add_addrinfo(name) \
   ((void)(name))
-#define sandbox_freeaddrinfo(res)
 #define sandbox_free_getaddrinfo_cache()
 
 /* END UNUSED SANDBOX API */
@@ -219,6 +218,7 @@ int sandbox_unlink(const char *);
 int sandbox_socket(int, int, int, cap_rights_t *);
 int sandbox_getaddrinfo(const char *, const char *,
     const struct addrinfo *, struct addrinfo **);
+void sandbox_freeaddrinfo(struct addrinfo *);
 int sandbox_connect(int, struct sockaddr *, socklen_t);
 int sandbox_stat(const char *, struct stat *);
 int sandbox_rename(const char *, const char *);
