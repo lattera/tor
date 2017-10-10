@@ -66,6 +66,7 @@
 #include "transports.h"
 #include "torcert.h"
 #include "channelpadding.h"
+#include "sandbox.h"
 
 /** Most recently received and validated v3 "ns"-flavored consensus network
  * status. */
