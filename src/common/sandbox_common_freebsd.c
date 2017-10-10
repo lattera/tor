@@ -297,9 +297,9 @@ sandbox_unlink(const char *path)
 
 	wrapper = send_request(&request);
 	if (wrapper == NULL) {
-    pthread_mutex_unlock(&sandbox_mtx);
+		pthread_mutex_unlock(&sandbox_mtx);
 		return (0);
-  }
+	}
 
 	res = wrapper->response.r_code;
 	if (res == ERROR_FAIL)

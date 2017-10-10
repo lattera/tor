@@ -61,6 +61,13 @@ static callback_result do_mkdir(int, struct request *);
 static callback_result do_stat(int, struct request *);
 static callback_result do_rename(int, struct request *);
 
+/*
+ * Order of callbacks is semi-important. The way the callback system
+ * is currently designed allows a developer to write callbacks
+ * specifically for auditing. An audit callback would return
+ * CB_CONTINUE rather than CB_TERMINATE and must be placed before any
+ * callback for that type that returns CB_TERMINATE.
+ */
 static struct callback {
 	request_type	c_type;
 	callback	c_callback;
@@ -126,9 +133,8 @@ lookup_response(uuid_t *uuid)
 		if (responses[i].active == 0)
 			continue;
 
-		if (uuid_equal(uuid, &(responses[i].response->r_uuid), NULL)) {
+		if (uuid_equal(uuid, &(responses[i].response->r_uuid), NULL))
 			return (&responses[i]);
-		}
 	}
 
 	return (NULL);
@@ -202,6 +208,7 @@ close_resource(uuid_t *uuid)
 		uuid_to_string(uuid, &str, NULL);
 		if (r->fd != badf)
 			close(r->fd);
+		memset(r->response, 0, sizeof(*(r->response)));
 		free(r->response);
 		memset(r, 0, sizeof(*r));
 	}
@@ -216,7 +223,7 @@ fork_backend(void)
 	pid_t pid;
 	size_t i;
 
-	if (socketpair(PF_UNIX, SOCK_DGRAM, 0, fdpair)) {
+	if (socketpair(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, fdpair)) {
 		perror("socketpair");
 		exit(1);
 	}
@@ -227,15 +234,32 @@ fork_backend(void)
 		perror("pdfork");
 		exit(1);
 	case 0:
+		/*
+		 * Not ignoring in the child the signals Tor cares
+		 * about can cause conflicts between the non-capmode
+		 * child and its capmode parent.
+		 */
 		signal(SIGINT, SIG_IGN);
 		signal(SIGTERM, SIG_IGN);
+
+		/*
+		 * sendmsg(2) won't allow us to send -1 as a file
+		 * descriptor (in case of error). Instead, open
+		 * /dev/null and use that as our -1 descriptor. Ensure
+		 * it has no capabilities.
+		 */
 		badf = open("/dev/null", O_RDONLY);
 		cap_rights_init(&rights);
 		cap_rights_limit(badf, &rights);
+
 		close(fdpair[0]);
 		fd = fdpair[1];
 		break;
 	default:
+		/*
+		 * Make sure that the IPC file descriptor is limited
+		 * to the very basics.
+		 */
 		cap_rights_init(&rights, CAP_READ, CAP_WRITE);
 		backend_fd = fdpair[0];
 		cap_rights_limit(backend_fd, &rights);
@@ -277,14 +301,9 @@ send_file_descriptor(int fd, struct responses *res)
 	struct cmsghdr *cmsg;
 	struct msghdr msg;
 	struct iovec iov;
-	char *str;
 
 	memset(&iov, 0, sizeof(iov));
 	memset(&msg, 0, sizeof(msg));
-
-	str = NULL;
-	uuid_to_string(&(res->response->r_uuid), &str, NULL);
-	free(str);
 
 	iov.iov_base = res->response;
 	iov.iov_len = sizeof(*(res->response));
@@ -393,6 +412,7 @@ do_getaddrinfo(int fd, struct request *request)
 	size_t i, nresults;
 	int err;
 
+	nresults = 0;
 	host = servname = NULL;
 	hints = NULL;
 	res = NULL;
@@ -405,15 +425,13 @@ do_getaddrinfo(int fd, struct request *request)
 		hints = &(request->r_payload.u_getaddrinfo.r_hints);
 
 	if (host == NULL && servname == NULL) {
-		printf("Child: Both host and servname cannot be null\n");
-		/* XXX Process error */
+		send(fd, &nresults, sizeof(nresults), 0);
 		goto err;
 	}
 
 	err = getaddrinfo(host, servname, hints, &res);
 	if (err) {
-		/* XXX Process error */
-		perror("child getaddrinfo");
+		send(fd, &nresults, sizeof(nresults), 0);
 		goto err;
 	}
 
@@ -426,7 +444,6 @@ do_getaddrinfo(int fd, struct request *request)
 
 	addrinfo_responses = calloc(nresults, sizeof(*responses));
 	if (addrinfo_responses == NULL) {
-		perror("Child calloc");
 		nresults = 0;
 		send(fd, &nresults, sizeof(nresults), 0);
 		goto err;
@@ -526,6 +543,7 @@ do_connect(int fd, struct request *request)
 	struct responses *r;
 	int conres;
 	char *str;
+	void *p;
 
 	conres = -1;
 
@@ -540,26 +558,27 @@ do_connect(int fd, struct request *request)
 		goto err;
 	}
 
-	/* XXX Yeah, this sucks horribly */
+	/*
+	 * Technically, p should end up pointing to the same address.
+	 * Splitting this out into a switch allows us to do sanity
+	 * checking, though.
+	 */
 	switch (request->r_payload.u_connect.r_socklen) {
 	case sizeof(struct sockaddr_in):
-		conres = connect(r->fd,
-		    (const struct sockaddr *)(&(request->r_payload.u_connect.r_sock.addr4)),
-		    request->r_payload.u_connect.r_socklen);
-		res.r_errno = errno;
+		p = &(request->r_payload.u_connect.r_sock.addr4);
 		break;
 	case sizeof(struct sockaddr_in6):
-		conres = connect(r->fd,
-		    (const struct sockaddr *)(&(request->r_payload.u_connect.r_sock.addr6)),
-		    request->r_payload.u_connect.r_socklen);
-		res.r_errno = errno;
+		p = &(request->r_payload.u_connect.r_sock.addr6);
 		break;
 	default:
-		printf("Yeah, this is a horrible thing to say, but your size is off: %zu\n",
-		    request->r_payload.u_connect.r_socklen);
+		/* Only IPv4 and IPv6 is supported right now. */
 		res.r_errno = EBADF;
 		break;
 	}
+
+	if (res.r_errno == 0)
+		conres = connect(r->fd, (const struct sockaddr *)p,
+		    request->r_payload.u_connect.r_socklen);
 
 err:
 	if (conres == -1) {
