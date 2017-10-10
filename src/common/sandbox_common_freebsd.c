@@ -409,8 +409,15 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 
 	responses = calloc(nresults, sizeof(*responses));
 	if (responses == NULL) {
-		/* XXX we still have data to recv... Fix this... */
-		perror("parent calloc");
+		/*
+		 * We still have data to receive. However, we don't
+		 * have any available memory. Receive one byte a time
+		 * until we've read all the data, then return -1.
+		 *
+		 * We'll intentionally discard the data.
+		 */
+		for (i = 0; i < sizeof(*responses) * nresults; i++)
+			recv(backend_fd, &retval, 1, 0);
 		retval = -1;
 		goto end;
 	}
