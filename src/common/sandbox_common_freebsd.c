@@ -8,15 +8,6 @@
 
 #include "orconfig.h"
 
-/** Malloc mprotect limit in bytes.
- *
- * 28/06/2017: This value was increased from 16 MB to 20 MB after we introduced
- * LZMA support in Tor (0.3.1.1-alpha). We limit our LZMA coder to 16 MB, but
- * liblzma have a small overhead that we need to compensate for to avoid being
- * killed by the sandbox.
- */
-#define MALLOC_MP_LIM (20*1024*1024)
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -31,8 +22,6 @@
 #include "torint.h"
 #include "util.h"
 #include "tor_queue.h"
-
-#include "ht.h"
 
 #if HAVE_SYS_CAPSICUM_H
 
@@ -358,7 +347,6 @@ sandbox_socket(int domain, int type, int protocol,
 	return (fd);
 }
 
-
 int
 sandbox_getaddrinfo(const char *name, const char *servname,
     const struct addrinfo *hints,
@@ -377,6 +365,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 		return (-1);
 
 	*res = NULL;
+	responses = NULL;
 
 	pthread_mutex_lock(&sandbox_mtx);
 
@@ -482,6 +471,10 @@ end:
 	if (retval == -1 && *res != NULL) {
 		sandbox_freeaddrinfo(*res);
 		*res = NULL;
+	}
+	if (responses != NULL) {
+		memset(responses, 0, sizeof(*responses) * nresults);
+		free(responses);
 	}
 	pthread_mutex_unlock(&sandbox_mtx);
 	return (retval);
