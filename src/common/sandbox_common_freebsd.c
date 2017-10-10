@@ -373,8 +373,10 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 	if (!active)
 		return (getaddrinfo(name, servname, hints, res));
 
-	if (name == NULL && servname == NULL)
+	if ((name == NULL && servname == NULL) || res == NULL)
 		return (-1);
+
+	*res = NULL;
 
 	pthread_mutex_lock(&sandbox_mtx);
 
@@ -448,7 +450,6 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 			p->ai_addrlen = sizeof(struct sockaddr_in);
 			p->ai_addr = malloc(p->ai_addrlen);
 			if (p->ai_addr == NULL) {
-				/* XXX Handle this */
 				retval = -1;
 				goto end;
 			}
@@ -459,7 +460,6 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 			p->ai_addrlen = sizeof(struct sockaddr_in6);
 			p->ai_addr = malloc(p->ai_addrlen);
 			if (p->ai_addr == NULL) {
-				/* XXX Handle this */
 				retval = -1;
 				goto end;
 			}
@@ -470,7 +470,6 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 
 		next = calloc(1, sizeof(struct addrinfo));
 		if (next == NULL) {
-			/* XXX Handle this */
 			retval = -1;
 			goto end;
 		}
@@ -480,6 +479,10 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 	}
 
 end:
+	if (retval == -1 && *res != NULL) {
+		sandbox_freeaddrinfo(*res);
+		*res = NULL;
+	}
 	pthread_mutex_unlock(&sandbox_mtx);
 	return (retval);
 }
