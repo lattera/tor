@@ -234,18 +234,11 @@ close_fd(uuid_t *uuid)
 void shutdown_backend(void)
 {
 	struct request request;
-	pid_t childpid;
 
 	pthread_mutex_lock(&sandbox_mtx);
-	if (pdgetpid(sandboxpid, &childpid)) {
-		perror("pdgetpid");
-		pthread_mutex_unlock(&sandbox_mtx);
-		return;
-	}
 
 	memset(&request, 0, sizeof(request));
 	request.r_type = SHUTDOWN;
-
 	send_request(&request);
 
 	pdkill(sandboxpid, SIGINT);
