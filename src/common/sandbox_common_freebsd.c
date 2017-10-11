@@ -721,7 +721,9 @@ sandbox_init(sandbox_cfg_t *cfg)
 #if SANDBOX_ENABLED
   /* Cache timezone data */
   clock = time(NULL);
-  gmtime(&clock);
+  if (gmtime(&clock) == NULL) {
+    return -1;
+  }
 
   pthread_mutex_init(&sandbox_mtx, NULL);
   fork_backend();
