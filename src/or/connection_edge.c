@@ -94,6 +94,7 @@
 #include "router.h"
 #include "routerlist.h"
 #include "routerset.h"
+#include "sandbox.h"
 #include "circuitbuild.h"
 
 #ifdef HAVE_LINUX_TYPES_H
@@ -2058,6 +2059,16 @@ int
 get_pf_socket(void)
 {
   int pf;
+#ifdef HAVE_SYS_CAPSICUM_H
+  cap_rights_t rights;
+  unsigned long cmds[] = {
+    DIOCNATLOOK,
+  };
+
+  cap_rights_init(&rights, CAP_IOCTL);
+#else
+  char rights;
+#endif
   /*  This should be opened before dropping privileges. */
   if (pf_socket >= 0)
     return pf_socket;
@@ -2067,7 +2078,8 @@ get_pf_socket(void)
   pf = tor_open_cloexec("/dev/pf", O_RDONLY, 0, NULL);
 #else
   /* works on NetBSD and FreeBSD */
-  pf = tor_open_cloexec("/dev/pf", O_RDWR, 0, NULL);
+  pf = tor_open_cloexec("/dev/pf", O_RDWR, 0, &rights);
+  cap_ioctls_limit(pf, cmds, sizeof(cmds)/sizeof(*cmds));
 #endif /* defined(OpenBSD) */
 
   if (pf < 0) {
