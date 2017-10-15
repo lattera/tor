@@ -2,7 +2,7 @@
 /* See LICENSE for licensing information */
 
 /**
- * \file sandbox_common_freebsd.c
+ * \file sandbox_common_tor_freebsd.c
  * \brief Code to enable sandboxing with Capsicum.
  **/
 
@@ -120,20 +120,20 @@ send_request(struct request *request)
 
 	switch (request->r_type) {
 	case GETADDRINFO:
-		free(wrapper);
+		tor_free(wrapper);
 		return (NULL);
 	case CONNECT_SOCKET:
 	case UNLINK_PATH:
 		nrecv = recv(backend_fd, &(wrapper->response),
 		    sizeof(wrapper->response), 0);
 		if (nrecv != sizeof(wrapper->response)) {
-			free(wrapper);
+			tor_free(wrapper);
 			return (NULL);
 		}
 		return (wrapper);
 	case CLOSE_FD:
 	case SHUTDOWN:
-		free(wrapper);
+		tor_free(wrapper);
 		return (NULL);
 	case ADD_FILE_PATH:
 	case CREATE_SOCKET:
@@ -163,7 +163,7 @@ send_request(struct request *request)
 		}
 	}
 
-	free(wrapper);
+	tor_free(wrapper);
 	return (NULL);
 
 }
@@ -306,7 +306,7 @@ sandbox_unlink(const char *path)
 		errno = wrapper->response.r_errno;
 
 	pthread_mutex_unlock(&sandbox_mtx);
-	free(wrapper);
+	tor_free(wrapper);
 	return (res == ERROR_FAIL ? -1 : 0);
 }
 
@@ -336,7 +336,7 @@ sandbox_socket(int domain, int type, int protocol,
 	}
 
 	pthread_mutex_unlock(&sandbox_mtx);
-	free(wrapper);
+	tor_free(wrapper);
 	return (fd);
 }
 
@@ -474,7 +474,7 @@ end:
 	}
 	if (responses != NULL) {
 		memset(responses, 0, sizeof(*responses) * nresults);
-		free(responses);
+		tor_free(responses);
 	}
 	pthread_mutex_unlock(&sandbox_mtx);
 	return (retval);
@@ -494,10 +494,10 @@ sandbox_freeaddrinfo(struct addrinfo *ai)
 		next = ai->ai_next;
 		if (ai->ai_addr != NULL) {
 			memset(ai->ai_addr, 0, ai->ai_addrlen);
-			free(ai->ai_addr);
+			tor_free(ai->ai_addr);
 		}
 		memset(ai, 0, sizeof(*ai));
-		free(ai);
+		tor_free(ai);
 		ai = next;
 	}
 }
@@ -554,13 +554,13 @@ sandbox_connect(int sockfd, struct sockaddr *name, socklen_t namelen)
 
 	if (wrapper->response.r_code != ERROR_NONE) {
 		errno = wrapper->response.r_errno;
-		free(wrapper);
+		tor_free(wrapper);
 		pthread_mutex_unlock(&sandbox_mtx);
 		return (-1);
 	}
 
 	pthread_mutex_unlock(&sandbox_mtx);
-	free(wrapper);
+	tor_free(wrapper);
 	return (0);
 }
 

@@ -188,7 +188,7 @@ new_uuid(void)
 		status = 0;
 		uuid_create(uuid, &status);
 		if (status != uuid_s_ok) {
-			free(uuid);
+			tor_free(uuid);
 			return (NULL);
 		}
 	} while (lookup_response(uuid));
@@ -209,7 +209,7 @@ close_resource(uuid_t *uuid)
 		if (r->fd != badf)
 			close(r->fd);
 		memset(r->response, 0, sizeof(*(r->response)));
-		free(r->response);
+		tor_free(r->response);
 		memset(r, 0, sizeof(*r));
 	}
 }
@@ -365,17 +365,17 @@ do_add_file_path(int commfd, struct request *request)
 	if (uuid == NULL) {
 		close(fd);
 		memset(response, 0, sizeof(*response));
-		free(response);
+		tor_free(response);
 		return (CB_TERMINATE);
 	}
 	memmove(&(response->r_uuid), uuid, sizeof(response->r_uuid));
-	free(uuid);
+	tor_free(uuid);
 
 	res = add_response(fd, response);
 	if (res == NULL) {
 		close(fd);
 		memset(response, 0, sizeof(*response));
-		free(response);
+		tor_free(response);
 		return (CB_TERMINATE);
 	}
 
@@ -517,17 +517,17 @@ do_socket_create(int commfd, struct request *request)
 	if (uuid == NULL) {
 		close(fd);
 		memset(response, 0, sizeof(*response));
-		free(response);
+		tor_free(response);
 		return (CB_TERMINATE);
 	}
 	memmove(&(response->r_uuid), uuid, sizeof(response->r_uuid));
-	free(uuid);
+	tor_free(uuid);
 
 	res = add_response(fd, response);
 	if (res == NULL) {
 		close(fd);
 		memset(response, 0, sizeof(*response));
-		free(response);
+		tor_free(response);
 		return (CB_TERMINATE);
 	}
 
