@@ -105,7 +105,7 @@ send_request(struct request *request)
 	struct iovec iov;
 	ssize_t nrecv;
 
-	wrapper = calloc(1, sizeof(*wrapper));
+	wrapper = tor_calloc(1, sizeof(*wrapper));
 	if (wrapper == NULL)
 		return (NULL);
 
@@ -400,7 +400,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 		goto end;
 	}
 
-	responses = calloc(nresults, sizeof(*responses));
+	responses = tor_calloc(nresults, sizeof(*responses));
 	if (responses == NULL) {
 		/*
 		 * We still have data to receive. However, we don't
@@ -421,7 +421,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 		goto end;
 	}
 
-	*res = calloc(1, sizeof(struct addrinfo));
+	*res = tor_calloc(1, sizeof(struct addrinfo));
 	if (*res == NULL) {
 		retval = -1;
 		goto end;
@@ -457,7 +457,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 			break;
 		}
 
-		next = calloc(1, sizeof(struct addrinfo));
+		next = tor_calloc(1, sizeof(struct addrinfo));
 		if (next == NULL) {
 			retval = -1;
 			goto end;

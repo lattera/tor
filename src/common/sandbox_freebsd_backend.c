@@ -180,7 +180,7 @@ new_uuid(void)
 	uuid_t *uuid;
 	uint32_t status;
 
-	uuid = calloc(1, sizeof(*uuid));
+	uuid = tor_calloc(1, sizeof(*uuid));
 	if (uuid == NULL)
 		return (NULL);
 
@@ -334,7 +334,7 @@ do_add_file_path(int commfd, struct request *request)
 	int fd, flags;
 	mode_t mode;
 
-	response = calloc(1, sizeof(*response));
+	response = tor_calloc(1, sizeof(*response));
 	if (response == NULL)
 		return (CB_TERMINATE);
 
@@ -442,7 +442,7 @@ do_getaddrinfo(int fd, struct request *request)
 		nresults++;
 	}
 
-	addrinfo_responses = calloc(nresults, sizeof(*responses));
+	addrinfo_responses = tor_calloc(nresults, sizeof(*responses));
 	if (addrinfo_responses == NULL) {
 		nresults = 0;
 		send(fd, &nresults, sizeof(nresults), 0);
@@ -493,7 +493,7 @@ do_socket_create(int commfd, struct request *request)
 	uuid_t *uuid;
 	int fd;
 
-	response = calloc(1, sizeof(*response));
+	response = tor_calloc(1, sizeof(*response));
 	if (response == NULL)
 		return (CB_TERMINATE);
 
