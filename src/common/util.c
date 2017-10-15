@@ -3724,7 +3724,10 @@ write_pidfile(const char *filename)
 #ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_t rights;
 
-  cap_rights_init(&rights, CAP_WRITE, CAP_FCNTL);
+  cap_rights_init(&rights, CAP_FSTAT, CAP_WRITE, CAP_FCNTL);
+  if (sandbox_cfg_allow_open_filename(NULL, (char *)filename)) {
+    return -1;
+  }
 #else
   char rights;
 #endif
@@ -3749,7 +3752,7 @@ write_pidfile(const char *filename)
   int rv = 0;
   if (fprintf(pidfile, "%d\n", pid) < 0)
     rv = -1;
-  if (sandbox_close(pidfile) < 0)
+  if (sandbox_close(fileno(pidfile)) < 0)
     rv = -1;
   return rv;
 }
