@@ -594,6 +594,8 @@ err:
 static callback_result
 do_close(int fd, struct request *request)
 {
+	(void)fd;
+
 	close_resource(&(request->r_payload.u_close_fd.r_uuid));
 	return (CB_TERMINATE);
 }
@@ -658,6 +660,8 @@ do_rename(int fd, struct request *request)
 static callback_result
 do_shutdown(int fd, struct request *request)
 {
+	(void)request;
+
 	close(fd);
 	_exit(0);
 }

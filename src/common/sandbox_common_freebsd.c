@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/procdesc.h>
 #include <sys/stat.h>
 #include <errno.h>
 
@@ -46,7 +47,7 @@ int backend_fd;
 static size_t nuuids, nwhitelist;
 
 static ssize_t
-whitelist_index(char *file)
+whitelist_index(const char *file)
 {
   size_t i;
 
@@ -150,6 +151,9 @@ send_request(struct request *request)
 		return (NULL);
 	case ADD_FILE_PATH:
 	case CREATE_SOCKET:
+	case MKDIR:
+	case STAT:
+	case RENAME:
 	default:
 		break;
 	}
@@ -211,7 +215,6 @@ create_socket(int domain, int type, int protocol,
 {
 	struct response_wrapper *wrapper;
 	struct request request;
-	int fd;
 
 	memset(&request, 0, sizeof(request));
 
@@ -244,7 +247,8 @@ close_fd(uuid_t *uuid)
 	send_request(&request);
 }
 
-void shutdown_backend(void)
+static void
+shutdown_backend(void)
 {
 	struct request request;
 
@@ -435,7 +439,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 	}
 
 	if (recv(backend_fd, responses, sizeof(*responses) * nresults, 0)
-	!= sizeof(*responses) * nresults) {
+	    != (ssize_t)(sizeof(*responses) * nresults)) {
 		retval = -1;
 		goto end;
 	}
@@ -527,7 +531,6 @@ sandbox_connect(int sockfd, struct sockaddr *name, socklen_t namelen)
 	struct response_wrapper *wrapper;
 	struct request request;
 	struct uuids *uuid;
-	int res;
 
 	if (!active)
 		return (connect(sockfd, name, namelen));
@@ -748,6 +751,7 @@ int
 sandbox_init(sandbox_cfg_t *cfg)
 {
   time_t clock;
+  (void)cfg;
 
 #if SANDBOX_ENABLED
   /* Cache timezone data */
@@ -772,6 +776,8 @@ int
 sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
   char **p;
+
+  (void)cfg;
 
   if (whitelist_index(file) != -1)
     return 0;
