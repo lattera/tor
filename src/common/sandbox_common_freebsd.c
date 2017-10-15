@@ -27,10 +27,6 @@
 
 #define SANDBOX_ENABLED 1
 
-static pthread_mutex_t sandbox_mtx;
-static int active;
-int backend_fd;
-
 struct response_wrapper {
 	int fd;
 	struct response response;
@@ -42,7 +38,24 @@ static struct uuids {
 	uuid_t uuid;
 } *uuids;
 
-static size_t nuuids;
+static pthread_mutex_t sandbox_mtx;
+static int active;
+static char **whitelist;
+int backend_fd;
+
+static size_t nuuids, nwhitelist;
+
+static ssize_t
+whitelist_index(char *file)
+{
+  size_t i;
+
+  for (i = 0; i < nwhitelist; i++)
+    if (strcmp(whitelist[i], file) == 0)
+      return i;
+
+  return -1;
+}
 
 static struct uuids *
 lookup_uuid(int fd)
@@ -258,6 +271,9 @@ sandbox_open(const char *path, int flags, mode_t mode,
 	if (!active)
 		return (open(path, flags, mode));
 
+  if (whitelist_index(path) == -1)
+    return EPERM;
+
 	pthread_mutex_lock(&sandbox_mtx);
 
 	fd = -1;
@@ -286,6 +302,9 @@ sandbox_unlink(const char *path)
 
 	if (!active)
 		return (unlink(path));
+
+  if (whitelist_index(path) == -1)
+    return EPERM;
 
 	pthread_mutex_lock(&sandbox_mtx);
 
@@ -573,6 +592,9 @@ sandbox_mkdir(const char *path, mode_t mode)
 	if (!active)
 		return (mkdir(path, mode));
 
+  if (whitelist_index(path) == -1)
+    return EPERM;
+
 	pthread_mutex_lock(&sandbox_mtx);
 
 	memset(&request, 0, sizeof(request));
@@ -602,6 +624,9 @@ sandbox_stat(const char *path, struct stat *sb)
 
 	if (!active)
 		return (stat(path, sb));
+
+  if (whitelist_index(path) == -1)
+    return EPERM;
 
 	memset(&request, 0, sizeof(request));
 	memset(&response, 0, sizeof(response));
@@ -644,6 +669,12 @@ sandbox_rename(const char *from, const char *to)
 
 	if (!active)
 		return (rename(from, to));
+
+  if (whitelist_index(from) == -1)
+    return EPERM;
+
+  if (whitelist_index(to) == -1)
+    return EPERM;
 
 	memset(&request, 0, sizeof(request));
 	memset(&response, 0, sizeof(response));
@@ -740,6 +771,17 @@ sandbox_init(sandbox_cfg_t *cfg)
 int
 sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
+  char **p;
+
+  if (whitelist_index(file) != -1)
+    return 0;
+
+  p = tor_reallocarray(whitelist, sizeof(char **), nwhitelist + 1);
+  if (p == NULL)
+    return (-1);
+
+  whitelist = p;
+  whitelist[nwhitelist++] = tor_strdup(file);
 
   return 0;
 }
@@ -748,39 +790,40 @@ int
 sandbox_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
 {
 
-  return 0;
+  return sandbox_cfg_allow_open_filename(cfg, file);
 }
 
 int
 sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
 {
-  (void)cfg; (void)file;
 
-  return 0;
+  return sandbox_cfg_allow_open_filename(cfg, file);
 }
 
 int
 sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
 {
-  (void)cfg; (void)file;
 
-  return 0;
+  return sandbox_cfg_allow_open_filename(cfg, file);
 }
 
 int
 sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
 {
-  (void)cfg; (void)file;
 
-  return 0;
+  return sandbox_cfg_allow_open_filename(cfg, file);
 }
 
 int
 sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
 {
-  (void)cfg; (void)file1; (void)file2;
+  int res;
 
-  return 0;
+  res = sandbox_cfg_allow_open_filename(cfg, file1);
+  if (res == 0)
+    res = sandbox_cfg_allow_open_filename(cfg, file2);
+
+  return res;
 }
 
 int
