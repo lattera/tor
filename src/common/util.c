@@ -3752,6 +3752,7 @@ write_pidfile(const char *filename)
   int rv = 0;
   if (fprintf(pidfile, "%d\n", pid) < 0)
     rv = -1;
+  fflush(pidfile);
   if (sandbox_close(fileno(pidfile)) < 0)
     rv = -1;
   return rv;
