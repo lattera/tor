@@ -38,6 +38,7 @@
 #include <errno.h>
 
 #include "orconfig.h"
+#include "util.h"
 
 #if HAVE_SYS_CAPSICUM_H
 
@@ -160,8 +161,7 @@ add_response(int fd, struct response *response)
 		}
 	}
 
-	p = realloc(responses, sizeof(struct responses) *
-	    (nresponses + 1));
+	p = tor_reallocarray(responses, sizeof(struct responses), (nresponses + 1));
 	if (p == NULL)
 		return (NULL);
 

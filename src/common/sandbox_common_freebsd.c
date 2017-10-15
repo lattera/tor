@@ -81,7 +81,7 @@ add_uuid(int fd, uuid_t *uuid)
 		}
 	}
 
-	p = realloc(uuids, sizeof(struct uuids) *
+	p = tor_reallocarray(uuids, sizeof(struct uuids),
 	    (nuuids + 1));
 	if (p == NULL)
 		return (NULL);
@@ -437,7 +437,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 		switch (p->ai_family) {
 		case AF_INET:
 			p->ai_addrlen = sizeof(struct sockaddr_in);
-			p->ai_addr = malloc(p->ai_addrlen);
+			p->ai_addr = tor_malloc(p->ai_addrlen);
 			if (p->ai_addr == NULL) {
 				retval = -1;
 				goto end;
@@ -447,7 +447,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 			break;
 		case AF_INET6:
 			p->ai_addrlen = sizeof(struct sockaddr_in6);
-			p->ai_addr = malloc(p->ai_addrlen);
+			p->ai_addr = tor_malloc(p->ai_addrlen);
 			if (p->ai_addr == NULL) {
 				retval = -1;
 				goto end;
