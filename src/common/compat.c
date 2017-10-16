@@ -225,6 +225,7 @@ tor_fopen_cloexec(const char *path, const char *mode)
   mode_t fdmode;
 
   flags = 0;
+  fdmode = 0;
   if ((strchr(mode, 'r') && strchr(mode, 'w')) || strchr(mode, 'a'))
     flags = O_RDWR;
   else if (strchr(mode, 'r'))
