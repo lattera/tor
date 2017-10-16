@@ -1,6 +1,9 @@
 #include "orconfig.h"
 #include "torint.h"
 
+#ifndef SANDBOX_LINUX_H_
+#define SANDBOX_LINUX_H_
+
 #ifndef SYS_SECCOMP
 
 /**
@@ -110,7 +113,7 @@ void sandbox_free_getaddrinfo_cache(void);
 #define sandbox_free_getaddrinfo_cache()
 #endif /* defined(USE_LIBSECCOMP) */
 
-#define sandbox_open(path, flags, mode) \
+#define sandbox_open(path, flags, mode, rights) \
   open((path), (flags), (mode))
 #define sandbox_mkdir(path, mode) \
   mkdir((path), (mode))
@@ -175,5 +178,5 @@ int sandbox_is_active(void);
 
 void sandbox_disable_getaddrinfo_cache(void);
 
-#endif /* !defined(SANDBOX_H_) */
+#endif /* !defined(SANDBOX_LINUX_H_) */
 

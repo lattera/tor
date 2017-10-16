@@ -1568,6 +1568,7 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
   cap_rights_init(&rights, CAP_IOCTL);
 #else
   char rights;
+  rights = 0;
 #endif
 
   /* This interface, AFAICT, only supports AF_INET addresses,

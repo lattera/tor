@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include "compat.h"
 #include "compat_threads.h"
+#include "sandbox.h"
 
 #include "util.h"
 #include "torlog.h"

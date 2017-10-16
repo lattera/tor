@@ -28,8 +28,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <sys/capsicum.h>
-#include <sys/procdesc.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -41,6 +39,9 @@
 #include "util.h"
 
 #if HAVE_SYS_CAPSICUM_H
+
+#include <sys/capsicum.h>
+#include <sys/procdesc.h>
 
 #include "sandbox.h"
 

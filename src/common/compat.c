@@ -210,8 +210,10 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
   }
 #endif /* defined(FD_CLOEXEC) */
  end:
+#ifdef HAVE_SYS_CAPSICUM_H
   if (dealloc_rights)
     tor_free(rights);
+#endif
   return fd;
 }
 
@@ -1318,6 +1320,7 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
     CAP_SETSOCKOPT);
 #else
   char rights;
+  rights = 0;
 #endif
 
   /* We are about to create a new file descriptor so make sure we have

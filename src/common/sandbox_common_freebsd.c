@@ -12,7 +12,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/procdesc.h>
 #include <sys/stat.h>
 #include <errno.h>
 
@@ -25,6 +24,8 @@
 #include "tor_queue.h"
 
 #if HAVE_SYS_CAPSICUM_H
+
+#include <sys/procdesc.h>
 
 #define SANDBOX_ENABLED 1
 

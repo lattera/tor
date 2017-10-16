@@ -19,6 +19,7 @@
 #include "router.h"
 #include "crypto_pwbox.h"
 #include "routerkeys.h"
+#include "sandbox.h"
 #include "torcert.h"
 
 #define ENC_KEY_HEADER "Boxed Ed25519 key"

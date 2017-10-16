@@ -38,6 +38,7 @@ hibernating, phase 2:
 #include "hibernate.h"
 #include "main.h"
 #include "router.h"
+#include "sandbox.h"
 #include "statefile.h"
 
 /** Are we currently awake, asleep, running out of bandwidth, or shutting
