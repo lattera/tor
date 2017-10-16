@@ -159,7 +159,7 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
   rights = rightsp;
 
   if (rights == NULL) {
-	  rights = calloc(1, sizeof(cap_rights_t));
+	  rights = tor_calloc(1, sizeof(cap_rights_t));
 	  if (rights == NULL) {
 		  return (-1);
 	  }
@@ -211,7 +211,7 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
 #endif /* defined(FD_CLOEXEC) */
 end:
   if (dealloc_rights)
-    free(rights);
+    tor_free(rights);
   return fd;
 }
 
