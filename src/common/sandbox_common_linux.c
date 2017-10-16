@@ -1883,3 +1883,4 @@ sandbox_unused_function(void)
 {
 }
 #endif /* !HAVE_SYS_CAPSICUM_H */
+

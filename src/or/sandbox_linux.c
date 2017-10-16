@@ -401,3 +401,4 @@ sandbox_init_filter(void)
   return cfg;
 }
 #endif /* !HAVE_SYS_CAPSICUM_H */
+

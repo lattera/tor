@@ -159,10 +159,10 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
   rights = rightsp;
 
   if (rights == NULL) {
-	  rights = tor_calloc(1, sizeof(cap_rights_t));
-	  if (rights == NULL) {
-		  return (-1);
-	  }
+    rights = tor_calloc(1, sizeof(cap_rights_t));
+    if (rights == NULL) {
+      return (-1);
+    }
     cap_rights_init(rights);
     dealloc_rights = 1;
   } else
@@ -170,11 +170,11 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
 
   cap_rights_set(rights, CAP_FCNTL, CAP_SEEK, CAP_EVENT, CAP_FSTAT);
   if (flags == O_RDONLY) {
-	  cap_rights_set(rights, CAP_READ);
+    cap_rights_set(rights, CAP_READ);
   } else if ((flags &  O_WRONLY) == O_WRONLY) {
-	  cap_rights_set(rights, CAP_WRITE);
+    cap_rights_set(rights, CAP_WRITE);
   } else {
-	  cap_rights_set(rights, CAP_READ, CAP_WRITE);
+    cap_rights_set(rights, CAP_READ, CAP_WRITE);
   }
 
   if ((flags & O_CREAT) == O_CREAT) {
@@ -209,7 +209,7 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
     }
   }
 #endif /* defined(FD_CLOEXEC) */
-end:
+ end:
   if (dealloc_rights)
     tor_free(rights);
   return fd;

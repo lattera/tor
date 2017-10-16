@@ -74,7 +74,6 @@ sandbox_cfg_t *sandbox_init_filter(void);
 
 /* BEGIN FREEBSD SANDBOX API */
 
-
 #include <uuid.h>
 #include <sys/capsicum.h>
 #include <sys/socket.h>

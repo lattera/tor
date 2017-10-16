@@ -2290,7 +2290,8 @@ check_private_dir,(const char *dirname, cpd_check_t check,
 
       /* we just created the directory. try to open it again.
        * permissions on the directory will be checked again below.*/
-      fd = sandbox_open(sandbox_intern_string(dirname), O_NOFOLLOW, 0, &rights);
+      fd = sandbox_open(sandbox_intern_string(dirname), O_NOFOLLOW,
+          0, &rights);
 
       if (fd == -1) {
         log_warn(LD_FS, "Could not reopen recently created directory %s: %s",
@@ -2553,7 +2554,8 @@ start_writing_to_file(const char *fname, int open_flags, int mode,
 #endif
 
 #ifdef HAVE_SYS_CAPSICUM_H
-  cap_rights_init(&rights, CAP_CREATE, CAP_READ, CAP_WRITE, CAP_SEEK, CAP_FCNTL);
+  cap_rights_init(&rights, CAP_CREATE, CAP_READ, CAP_WRITE, CAP_SEEK,
+      CAP_FCNTL);
 #endif
   new_file->fd = tor_open_cloexec(open_name, open_flags, mode, &rights);
   if (new_file->fd < 0) {

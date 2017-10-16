@@ -126,8 +126,8 @@ void sandbox_free_getaddrinfo_cache(void);
   rename((from), (to))
 #define sandbox_close(fd) \
   close((fd))
-#define fork_backend do { } while (0);
-#define sandbox_cleanup do { } while(0);
+#define fork_backend() do { } while (0);
+#define sandbox_cleanup() do { } while(0);
 
 #ifdef USE_LIBSECCOMP
 /** Returns a registered protected string used with the sandbox, given that
@@ -176,3 +176,4 @@ int sandbox_is_active(void);
 void sandbox_disable_getaddrinfo_cache(void);
 
 #endif /* !defined(SANDBOX_H_) */
+

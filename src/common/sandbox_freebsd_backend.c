@@ -478,7 +478,7 @@ do_getaddrinfo(int fd, struct request *request)
 
   send(fd, addrinfo_responses, sizeof(*addrinfo_responses) * nresults, 0);
 
-err:
+ err:
   if (res != NULL)
     freeaddrinfo(res);
 
@@ -580,7 +580,7 @@ do_connect(int fd, struct request *request)
     conres = connect(r->fd, (const struct sockaddr *)p,
         request->r_payload.u_connect.r_socklen);
 
-err:
+ err:
   if (conres == -1) {
     res.r_code = ERROR_FAIL;
     res.r_errno = errno;
@@ -666,3 +666,4 @@ do_shutdown(int fd, struct request *request)
   _exit(0);
 }
 #endif /* HAVE_SYS_CAPSICUM_H */
+

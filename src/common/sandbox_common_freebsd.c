@@ -182,7 +182,6 @@ send_request(struct request *request)
 
   tor_free(wrapper);
   return (NULL);
-
 }
 
 static struct response_wrapper *
@@ -291,7 +290,7 @@ sandbox_open(const char *path, int flags, mode_t mode,
     errno = wrapper->response.r_errno;
   }
 
-end:
+ end:
   pthread_mutex_unlock(&sandbox_mtx);
 
   return (fd);
@@ -490,7 +489,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
     p = next;
   }
 
-end:
+ end:
   if (retval == -1 && *res != NULL) {
     sandbox_freeaddrinfo(*res);
     *res = NULL;
@@ -852,3 +851,4 @@ sandbox_cleanup(void)
   }
 }
 #endif /* HAVE_SYS_CAPSICUM_H */
+
