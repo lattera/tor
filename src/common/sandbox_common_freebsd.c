@@ -779,6 +779,10 @@ sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 
   (void)cfg;
 
+  /* Whitelist is read-only when sandbox is active */
+  if (active)
+	  return -1;
+
   if (file == NULL || file[0] != '/')
 	  return 0;
 
