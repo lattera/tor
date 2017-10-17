@@ -275,8 +275,10 @@ sandbox_open(const char *path, int flags, mode_t mode,
   if (!active)
     return (open(path, flags, mode));
 
-  if (whitelist_index(path) == -1)
-    return EPERM;
+  if (whitelist_index(path) == -1) {
+    errno = EPERM;
+    return -1;
+  }
 
   pthread_mutex_lock(&sandbox_mtx);
 
@@ -307,8 +309,10 @@ sandbox_unlink(const char *path)
   if (!active)
     return (unlink(path));
 
-  if (whitelist_index(path) == -1)
-    return EPERM;
+  if (whitelist_index(path) == -1) {
+    errno = EPERM;
+    return -1;
+  }
 
   pthread_mutex_lock(&sandbox_mtx);
 
@@ -595,8 +599,10 @@ sandbox_mkdir(const char *path, mode_t mode)
   if (!active)
     return (mkdir(path, mode));
 
-  if (whitelist_index(path) == -1)
-    return EPERM;
+  if (whitelist_index(path) == -1) {
+    errno = EPERM;
+    return -1;
+  }
 
   pthread_mutex_lock(&sandbox_mtx);
 
@@ -628,8 +634,10 @@ sandbox_stat(const char *path, struct stat *sb)
   if (!active)
     return (stat(path, sb));
 
-  if (whitelist_index(path) == -1)
-    return EPERM;
+  if (whitelist_index(path) == -1) {
+    errno = EPERM;
+    return -1;
+  }
 
   memset(&request, 0, sizeof(request));
   memset(&response, 0, sizeof(response));
@@ -673,11 +681,15 @@ sandbox_rename(const char *from, const char *to)
   if (!active)
     return (rename(from, to));
 
-  if (whitelist_index(from) == -1)
-    return EPERM;
+  if (whitelist_index(from) == -1) {
+    errno = EPERM;
+    return -1;
+  }
 
-  if (whitelist_index(to) == -1)
-    return EPERM;
+  if (whitelist_index(to) == -1) {
+    errno =  EPERM;
+    return -1;
+  }
 
   memset(&request, 0, sizeof(request));
   memset(&response, 0, sizeof(response));
