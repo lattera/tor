@@ -52,8 +52,11 @@ whitelist_index(const char *file)
 {
   size_t i;
 
+  if (file == NULL)
+    return -1;
+
   for (i = 0; i < nwhitelist; i++)
-    if (strcmp(whitelist[i], file) == 0)
+    if (whitelist[i] != NULL && strcmp(whitelist[i], file) == 0)
       return i;
 
   return -1;
