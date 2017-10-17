@@ -779,6 +779,9 @@ sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 
   (void)cfg;
 
+  if (file == NULL || file[0] != '/')
+	  return 0;
+
   if (whitelist_index(file) != -1)
     return 0;
 
