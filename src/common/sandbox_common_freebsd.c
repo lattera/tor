@@ -52,10 +52,24 @@ int backend_fd;
 
 static size_t nuuids, ndirs;
 
+static int
+sandbox_freebsd_is_active(void)
+{
+  unsigned int mode;
+
+  mode = 0;
+  cap_getmode(&mode);
+
+  return mode;
+}
+
 static void
 add_directory_descriptor(int fd, char *path)
 {
   void *p;
+
+  if (sandbox_freebsd_is_active())
+    return;
 
   p = tor_reallocarray(dirfds, sizeof(*dirfds), ndirs + 1);
   if (p == NULL)
@@ -92,17 +106,6 @@ lookup_directory_descriptor(char *file)
     return entry->fd;
 
   return -1;
-}
-
-static int
-sandbox_freebsd_is_active(void)
-{
-  unsigned int mode;
-
-  mode = 0;
-  cap_getmode(&mode);
-
-  return mode;
 }
 
 static struct uuids *
@@ -802,8 +805,10 @@ sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
       return -1;
     }
 
-    if (!S_ISDIR(sb.st_mode))
+    if (!S_ISDIR(sb.st_mode)) {
+      close(fd);
       return 0;
+    }
 
     add_directory_descriptor(fd, file);
   }

@@ -385,6 +385,10 @@ sandbox_init_filter(void)
     consdiffmgr_register_with_sandbox(&cfg);
   }
 
+#ifdef HAVE_SYS_CAPSICUM_H
+  sandbox->sandbox_cfg_allow_open_filename(&cfg, "/dev");
+#endif
+
   init_addrinfo();
 
   return cfg;
