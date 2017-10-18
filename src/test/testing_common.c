@@ -233,6 +233,8 @@ main(int c, const char **v)
   int loglevel = LOG_ERR;
   int accel_crypto = 0;
 
+  sandbox_get_impl();
+
   /* We must initialise logs before we call tor_assert() */
   init_logging(1);
 
