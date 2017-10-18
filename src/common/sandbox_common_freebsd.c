@@ -187,7 +187,6 @@ send_request(struct request *request)
     tor_free(wrapper);
     return (NULL);
   case CONNECT_SOCKET:
-  case UNLINK_PATH:
     nrecv = recv(backend_fd, &(wrapper->response),
         sizeof(wrapper->response), 0);
     if (nrecv != sizeof(wrapper->response)) {
@@ -199,11 +198,6 @@ send_request(struct request *request)
   case SHUTDOWN:
     tor_free(wrapper);
     return (NULL);
-  case ADD_FILE_PATH:
-  case CREATE_SOCKET:
-  case MKDIR:
-  case STAT:
-  case RENAME:
   default:
     break;
   }

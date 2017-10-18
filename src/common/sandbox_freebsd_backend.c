@@ -52,16 +52,11 @@ typedef enum _callback_result {
 
 typedef callback_result (*callback)(int, struct request *);
 
-static callback_result do_add_file_path(int, struct request *);
 static callback_result do_getaddrinfo(int, struct request *);
-static callback_result do_unlink_path(int, struct request *);
 static callback_result do_socket_create(int, struct request *);
 static callback_result do_connect(int, struct request *);
 static callback_result do_shutdown(int, struct request *);
 static callback_result do_close(int, struct request *);
-static callback_result do_mkdir(int, struct request *);
-static callback_result do_stat(int, struct request *);
-static callback_result do_rename(int, struct request *);
 
 /*
  * Order of callbacks is semi-important. The way the callback system
@@ -75,16 +70,8 @@ static struct callback {
   callback  c_callback;
 } callbacks[] = {
   {
-    ADD_FILE_PATH,
-    do_add_file_path
-  },
-  {
     GETADDRINFO,
     do_getaddrinfo
-  },
-  {
-    UNLINK_PATH,
-    do_unlink_path
   },
   {
     CREATE_SOCKET,
@@ -102,18 +89,6 @@ static struct callback {
     CLOSE_FD,
     do_close
   },
-  {
-    MKDIR,
-    do_mkdir
-  },
-  {
-    STAT,
-    do_stat
-  },
-  {
-    RENAME,
-    do_rename
-  }
 };
 
 static struct responses {
@@ -327,84 +302,6 @@ send_file_descriptor(int fd, struct responses *res)
 }
 
 static callback_result
-do_add_file_path(int commfd, struct request *request)
-{
-  struct response *response;
-  struct responses *res;
-  uuid_t *uuid;
-  int fd, flags;
-  mode_t mode;
-
-  response = tor_calloc(1, sizeof(*response));
-  if (response == NULL)
-    return (CB_TERMINATE);
-
-  flags = request->r_payload.u_add_file_path.r_flags;
-  mode = request->r_payload.u_add_file_path.r_mode;
-
-  if ((flags & O_CREAT) == O_CREAT) {
-    fd = open(request->r_payload.u_add_file_path.r_path,
-        flags, mode);
-  } else {
-    fd = open(request->r_payload.u_add_file_path.r_path,
-        flags);
-  }
-
-  if (fd != -1 &&
-      (request->r_payload.u_add_file_path.r_features & F_FEATURE_CAP)) {
-    cap_rights_limit(fd,
-        &(request->r_payload.u_add_file_path.r_rights));
-  }
-
-  if (fd == -1) {
-    fd = badf;
-    response->r_code = ERROR_FAIL;
-    response->r_errno = errno;
-  }
-
-  uuid = new_uuid();
-  if (uuid == NULL) {
-    close(fd);
-    memset(response, 0, sizeof(*response));
-    tor_free(response);
-    return (CB_TERMINATE);
-  }
-  memmove(&(response->r_uuid), uuid, sizeof(response->r_uuid));
-  tor_free(uuid);
-
-  res = add_response(fd, response);
-  if (res == NULL) {
-    close(fd);
-    memset(response, 0, sizeof(*response));
-    tor_free(response);
-    return (CB_TERMINATE);
-  }
-
-  send_file_descriptor(commfd, res);
-
-  return (CB_TERMINATE);
-}
-
-static callback_result
-do_unlink_path(int fd, struct request *request)
-{
-  struct response response;
-  int res;
-
-  memset(&response, 0, sizeof(response));
-
-  res = unlink(request->r_payload.u_unlink_path.r_path);
-  if (res) {
-    response.r_code = ERROR_FAIL;
-    response.r_errno = errno;
-  }
-
-  send(fd, &response, sizeof(response), 0);
-
-  return (CB_TERMINATE);
-}
-
-static callback_result
 do_getaddrinfo(int fd, struct request *request)
 {
   struct addrinfo *hints, *iter, *res;
@@ -598,63 +495,6 @@ do_close(int fd, struct request *request)
   (void)fd;
 
   close_resource(&(request->r_payload.u_close_fd.r_uuid));
-  return (CB_TERMINATE);
-}
-
-static callback_result
-do_mkdir(int fd, struct request *request)
-{
-  struct response response;
-  int res;
-
-  memset(&response, 0, sizeof(response));
-  res = mkdir(request->r_payload.u_mkdir.r_path,
-      request->r_payload.u_mkdir.r_mode);
-  if (res) {
-    response.r_code = ERROR_FAIL;
-    response.r_errno = errno;
-  }
-
-  send(fd, &response, sizeof(response), 0);
-
-  return (CB_TERMINATE);
-}
-
-static callback_result
-do_stat(int fd, struct request *request)
-{
-  struct response_stat response;
-
-  memset(&response, 0, sizeof(response));
-
-  if (stat(request->r_payload.u_stat.r_path, &(response.rs_sb))) {
-    response.rs_code = ERROR_FAIL;
-    response.rs_errno = errno;
-  }
-
-  send(fd, &response, sizeof(response), 0);
-
-  return (CB_TERMINATE);
-}
-
-static callback_result
-do_rename(int fd, struct request *request)
-{
-  struct generic_response response;
-  int res;
-
-  memset(&response, 0, sizeof(response));
-
-  res = rename(request->r_payload.u_rename.r_from_path,
-      request->r_payload.u_rename.r_to_path);
-
-  if (res) {
-    response.r_code = ERROR_FAIL;
-    response.r_errno = errno;
-  }
-
-  send(fd, &response, sizeof(response), 0);
-
   return (CB_TERMINATE);
 }
 
