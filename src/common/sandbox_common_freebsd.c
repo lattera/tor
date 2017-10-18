@@ -321,8 +321,7 @@ sandbox_freebsd_open(const char *path, int flags, mode_t mode,
   }
 
   relpath = path;
-  if (relpath[0] == '/')
-    relpath += strlen(dirfd->path) + 1;
+  relpath += strlen(dirfd->path) + 1;
 
   fd = openat(dirfd->fd, relpath, flags, mode);
   if (fd != -1 && rights != NULL)
@@ -692,45 +691,51 @@ sandbox_freebsd_stat(const char *path, struct stat *sb)
 static int
 sandbox_freebsd_rename(const char *from, const char *to)
 {
-  struct generic_response response;
-  struct request request;
+  struct dirfd *fromfd, *tofd;
+  const char *relfrom, *relto;
 
   if (!sandbox_freebsd_is_active())
     return (rename(from, to));
 
-  memset(&request, 0, sizeof(request));
-  memset(&response, 0, sizeof(response));
-
-  pthread_mutex_lock(&sandbox_mtx);
-
-  request.r_type = RENAME;
-  strlcpy(request.r_payload.u_rename.r_from_path,
-      from,
-      sizeof(request.r_payload.u_rename.r_from_path));
-  strlcpy(request.r_payload.u_rename.r_to_path,
-      to,
-      sizeof(request.r_payload.u_rename.r_to_path));
-
-  if (send(backend_fd, &request, sizeof(request), 0) != sizeof(request)) {
-    perror("send");
-    pthread_mutex_unlock(&sandbox_mtx);
-    return (-1);
+  /* The path passed in must be the fully-qualified path */
+  if (from[0] != '/' || to[0] != '/') {
+    errno = EPERM;
+    return -1;
   }
 
-  if (recv(backend_fd, &response, sizeof(response), 0) != sizeof(response)) {
-    perror("recv");
-    pthread_mutex_unlock(&sandbox_mtx);
-    return (-1);
+  fromfd = lookup_directory(from);
+  if (fromfd == NULL) {
+    errno = EPERM;
+    return -1;
   }
 
-  pthread_mutex_unlock(&sandbox_mtx);
-
-  if (response.r_code != ERROR_NONE) {
-    errno = response.r_errno;
-    return (-1);
+  /* The following logic assumes that strlen(path) >
+   * strlen(dirfd->path) + 1. */
+  if (strlen(from) < strlen(fromfd->path) + 1) {
+    errno = EPERM;
+    return -1;
   }
 
-  return (0);
+  relfrom = from;
+  relfrom += strlen(fromfd->path) + 1;
+
+  tofd = lookup_directory(to);
+  if (tofd == NULL) {
+    errno = EPERM;
+    return -1;
+  }
+
+  /* The following logic assumes that strlen(path) >
+   * strlen(dirfd->path) + 1. */
+  if (strlen(to) < strlen(tofd->path) + 1) {
+    errno = EPERM;
+    return -1;
+  }
+
+  relto = to;
+  relto += strlen(tofd->path) + 1;
+
+  return renameat(fromfd->fd, relfrom, tofd->fd, relto);
 }
 
 static int
