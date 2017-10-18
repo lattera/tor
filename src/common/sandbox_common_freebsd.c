@@ -40,26 +40,25 @@ static struct uuids {
   uuid_t uuid;
 } *uuids;
 
+static struct dirfd {
+  int fd;
+  char *path;
+} *dirfds;
+
 static pthread_mutex_t sandbox_mtx;
-static int active;
-static char **whitelist;
 int backend_fd;
 
-static size_t nuuids, nwhitelist;
+static size_t nuuids, ndirs;
 
-static ssize_t
-whitelist_index(const char *file)
+static int
+sandbox_freebsd_is_active(void)
 {
-  size_t i;
+  unsigned int mode;
 
-  if (file == NULL)
-    return -1;
+  mode = 0;
+  cap_getmode(&mode);
 
-  for (i = 0; i < nwhitelist; i++)
-    if (whitelist[i] != NULL && strcmp(whitelist[i], file) == 0)
-      return i;
-
-  return -1;
+  return mode;
 }
 
 static struct uuids *
@@ -275,13 +274,8 @@ sandbox_freebsd_open(const char *path, int flags, mode_t mode,
   struct response_wrapper *wrapper;
   int fd;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (open(path, flags, mode));
-
-  if (whitelist_index(path) == -1) {
-    errno = EPERM;
-    return -1;
-  }
 
   pthread_mutex_lock(&sandbox_mtx);
 
@@ -309,13 +303,8 @@ sandbox_freebsd_unlink(const char *path)
   struct request request;
   int res;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (unlink(path));
-
-  if (whitelist_index(path) == -1) {
-    errno = EPERM;
-    return -1;
-  }
 
   pthread_mutex_lock(&sandbox_mtx);
 
@@ -347,7 +336,7 @@ sandbox_freebsd_socket(int domain, int type, int protocol,
   struct response_wrapper *wrapper;
   int fd;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (socket(domain, type, protocol));
 
   pthread_mutex_lock(&sandbox_mtx);
@@ -375,7 +364,7 @@ sandbox_freebsd_freeaddrinfo(struct addrinfo *ai)
 {
   struct addrinfo *next;
 
-  if (!active) {
+  if (!sandbox_freebsd_is_active()) {
     freeaddrinfo(ai);
     return;
   }
@@ -403,7 +392,7 @@ sandbox_freebsd_getaddrinfo(const char *name, const char *servname,
   size_t i, nresults;
   int retval;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (getaddrinfo(name, servname, hints, res));
 
   if ((name == NULL && servname == NULL) || res == NULL)
@@ -539,7 +528,7 @@ sandbox_freebsd_connect(int sockfd, const struct sockaddr *name, socklen_t namel
   struct request request;
   struct uuids *uuid;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (connect(sockfd, name, namelen));
 
   pthread_mutex_lock(&sandbox_mtx);
@@ -599,13 +588,8 @@ sandbox_freebsd_mkdir(const char *path, mode_t mode)
   struct request request;
   struct response response;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (mkdir(path, mode));
-
-  if (whitelist_index(path) == -1) {
-    errno = EPERM;
-    return -1;
-  }
 
   pthread_mutex_lock(&sandbox_mtx);
 
@@ -634,13 +618,8 @@ sandbox_freebsd_stat(const char *path, struct stat *sb)
   struct response_stat response;
   struct request request;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (stat(path, sb));
-
-  if (whitelist_index(path) == -1) {
-    errno = EPERM;
-    return -1;
-  }
 
   memset(&request, 0, sizeof(request));
   memset(&response, 0, sizeof(response));
@@ -681,18 +660,8 @@ sandbox_freebsd_rename(const char *from, const char *to)
   struct generic_response response;
   struct request request;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (rename(from, to));
-
-  if (whitelist_index(from) == -1) {
-    errno = EPERM;
-    return -1;
-  }
-
-  if (whitelist_index(to) == -1) {
-    errno =  EPERM;
-    return -1;
-  }
 
   memset(&request, 0, sizeof(request));
   memset(&response, 0, sizeof(response));
@@ -735,7 +704,7 @@ sandbox_freebsd_close(int fd)
   struct uuids *u;
   int res;
 
-  if (!active)
+  if (!sandbox_freebsd_is_active())
     return (close(fd));
 
   pthread_mutex_lock(&sandbox_mtx);
@@ -774,8 +743,6 @@ sandbox_freebsd_init(sandbox_cfg_t *cfg)
 
   if (cap_enter() == ENOSYS)
     return -1;
-
-  active = 1;
 #endif
 
   return 0;
@@ -788,22 +755,11 @@ sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 
   (void)cfg;
 
-  /* Whitelist is read-only when sandbox is active */
-  if (active)
+  if (sandbox_freebsd_is_active())
 	  return -1;
 
   if (file == NULL || file[0] != '/')
 	  return 0;
-
-  if (whitelist_index(file) != -1)
-    return 0;
-
-  p = tor_reallocarray(whitelist, sizeof(char **), nwhitelist + 1);
-  if (p == NULL)
-    return (-1);
-
-  whitelist = p;
-  whitelist[nwhitelist++] = tor_strdup(file);
 
   return 0;
 }
@@ -848,12 +804,6 @@ sandbox_freebsd_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
   return res;
 }
 
-static int
-sandbox_freebsd_is_active(void)
-{
-  return active;
-}
-
 static const char *
 sandbox_freebsd_intern_string(const char *str)
 {
@@ -863,7 +813,7 @@ sandbox_freebsd_intern_string(const char *str)
 static void
 sandbox_freebsd_cleanup(void)
 {
-  if (active) {
+  if (sandbox_freebsd_is_active()) {
     shutdown_backend();
     pthread_mutex_destroy(&sandbox_mtx);
   }

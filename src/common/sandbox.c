@@ -17,3 +17,9 @@ sandbox_get_impl(void)
 
   return sandbox;
 }
+
+__attribute__((constructor)) void
+sandbox_preinit(void)
+{
+  sandbox_get_impl();
+}
