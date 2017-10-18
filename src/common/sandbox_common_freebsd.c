@@ -632,43 +632,35 @@ sandbox_freebsd_mkdir(const char *path, mode_t mode)
 static int
 sandbox_freebsd_stat(const char *path, struct stat *sb)
 {
-  struct response_stat response;
-  struct request request;
+  const char *relpath;
+  struct dirfd *dirfd;
 
   if (!sandbox_freebsd_is_active())
-    return (stat(path, sb));
+    return stat(path, sb);
 
-  memset(&request, 0, sizeof(request));
-  memset(&response, 0, sizeof(response));
-
-  pthread_mutex_lock(&sandbox_mtx);
-
-  request.r_type = STAT;
-  strlcpy(request.r_payload.u_stat.r_path,
-      path,
-      sizeof(request.r_payload.u_stat.r_path));
-
-  if (send(backend_fd, &request, sizeof(request), 0) != sizeof(request)) {
-    perror("send");
-    pthread_mutex_unlock(&sandbox_mtx);
-    return (-1);
+  /* The path passed in must be the fully-qualified path */
+  if (path[0] != '/') {
+    errno = EPERM;
+    return -1;
   }
 
-  if (recv(backend_fd, &response, sizeof(response), 0) != sizeof(response)) {
-    perror("recv");
-    pthread_mutex_unlock(&sandbox_mtx);
-    return (-1);
+  dirfd = lookup_directory(path);
+  if (dirfd == NULL) {
+    errno = EPERM;
+    return -1;
   }
 
-  pthread_mutex_unlock(&sandbox_mtx);
-
-  if (response.rs_code != ERROR_NONE) {
-    errno = response.rs_errno;
-    return (-1);
+  /* The following logic assumes that strlen(path) >
+   * strlen(dirfd->path) + 1. */
+  if (strlen(path) < strlen(dirfd->path) + 1) {
+    errno = EPERM;
+    return -1;
   }
 
-  memmove(sb, &(response.rs_sb), sizeof(*sb));
-  return (0);
+  relpath = path;
+  relpath += strlen(dirfd->path) + 1;
+
+  return fstatat(dirfd->fd, relpath, sb, 0);
 }
 
 static int
