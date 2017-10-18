@@ -63,6 +63,18 @@ sandbox_freebsd_is_active(void)
   return mode;
 }
 
+static int
+directory_exists(char *path)
+{
+  size_t i;
+
+  for (i = 0; i < ndirs; i++)
+    if (!strcmp(dirfds[i].path, path))
+      return 1;
+
+  return 0;
+}
+
 static struct dirfd *
 lookup_directory(char *file)
 {
@@ -779,7 +791,7 @@ sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
       return -1;
     }
 
-    if (!S_ISDIR(sb.st_mode)) {
+    if (!S_ISDIR(sb.st_mode) || directory_exists(file)) {
       close(fd);
       return 0;
     }
