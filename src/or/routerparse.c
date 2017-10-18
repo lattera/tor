@@ -901,7 +901,7 @@ dump_desc,(const char *desc, const char *type))
    * Check if the sandbox is active or will become active; see comment
    * below at the log message for why.
    */
-  if (!(sandbox_is_active() || get_options()->Sandbox)) {
+  if (!(sandbox->sandbox_is_active() || get_options()->Sandbox)) {
     if (len <= get_options()->MaxUnparseableDescSizeToLog) {
       if (!dump_desc_fifo_bump_hash(digest_sha256)) {
         /* Create the directory if needed */
@@ -5684,7 +5684,7 @@ routerparse_init(void)
    * point in loading all that if we won't be able to use it after the
    * sandbox becomes active.
    */
-  if (!(sandbox_is_active() || get_options()->Sandbox)) {
+  if (!(sandbox->sandbox_is_active() || get_options()->Sandbox)) {
     dump_desc_init();
   }
 }

@@ -565,7 +565,7 @@ connection_free_(connection_t *conn)
        * and listeners at the same time */
       tor_assert(conn_listener_type_supports_af_unix(conn->type));
 
-      if (sandbox_unlink(conn->address) < 0 && errno != ENOENT) {
+      if (sandbox->sandbox_unlink(conn->address) < 0 && errno != ENOENT) {
         log_warn(LD_NET, "Could not unlink %s: %s", conn->address,
                          strerror(errno));
       }
@@ -1283,7 +1283,7 @@ connection_listener_new(const struct sockaddr *listensockaddr,
 
     tor_addr_make_unspec(&addr);
 
-    if (sandbox_unlink(address) < 0 && errno != ENOENT) {
+    if (sandbox->sandbox_unlink(address) < 0 && errno != ENOENT) {
       log_warn(LD_NET, "Could not unlink %s: %s", address,
                        strerror(errno));
       goto err;
@@ -1323,7 +1323,7 @@ connection_listener_new(const struct sockaddr *listensockaddr,
       } else if (fstat(s, &st) == 0 &&
                  st.st_uid == pw->pw_uid && st.st_gid == pw->pw_gid) {
         /* No change needed */
-      } else if (chown(sandbox_intern_string(address),
+      } else if (chown(sandbox->sandbox_intern_string(address),
                        pw->pw_uid, pw->pw_gid) < 0) {
         log_warn(LD_NET,"Unable to chown() %s socket: %s.",
                  address, strerror(errno));
@@ -1350,7 +1350,7 @@ connection_listener_new(const struct sockaddr *listensockaddr,
        * platforms. */
       if (fstat(s, &st) == 0 && (st.st_mode & 0777) == mode) {
         /* no change needed */
-      } else if (chmod(sandbox_intern_string(address), mode) < 0) {
+      } else if (chmod(sandbox->sandbox_intern_string(address), mode) < 0) {
         log_warn(LD_FS,"Unable to make %s %s.", address, status);
         goto err;
       }
@@ -1801,7 +1801,7 @@ connection_connect_sockaddr,(connection_t *conn,
   if (options->ConstrainedSockets)
     set_constrained_socket_buffers(s, (int)options->ConstrainedSockSize);
 
-  if (sandbox_connect(s, sa, sa_len) < 0) {
+  if (sandbox->sandbox_connect(s, sa, sa_len) < 0) {
     int e = tor_socket_errno(s);
     if (!ERRNO_IS_CONN_EINPROGRESS(e)) {
       /* yuck. kill it. */

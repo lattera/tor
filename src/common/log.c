@@ -800,7 +800,7 @@ static void
 close_log(logfile_t *victim)
 {
   if (victim->needs_close && victim->fd >= 0) {
-    sandbox_close(victim->fd);
+    sandbox->sandbox_close(victim->fd);
     victim->fd = -1;
   } else if (victim->is_syslog) {
 #ifdef HAVE_SYSLOG_H
@@ -1091,7 +1091,7 @@ add_file_log(const log_severity_list_t *severity, const char *filename,
   if (fd<0)
     return -1;
   if (tor_fd_seekend(fd)<0) {
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
     return -1;
   }
 

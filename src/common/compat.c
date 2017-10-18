@@ -148,15 +148,12 @@ static int max_sockets = 1024;
 /** As open(path, flags, mode), but return an fd with the close-on-exec mode
  * set. */
 int
-tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
+tor_open_cloexec(const char *path, int flags, unsigned mode, cap_rights_t *rights)
 {
   int fd;
-  const char *p = sandbox_intern_string(path);
+  const char *p = sandbox->sandbox_intern_string(path);
 #ifdef HAVE_SYS_CAPSICUM_H
   int dealloc_rights;
-  cap_rights_t *rights;
-
-  rights = rightsp;
 
   if (rights == NULL) {
     rights = tor_calloc(1, sizeof(cap_rights_t));
@@ -180,12 +177,10 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
   if ((flags & O_CREAT) == O_CREAT) {
     cap_rights_set(rights, CAP_CREATE);
   }
-#else
-  void *rights = rightsp;
 #endif
 
 #ifdef O_CLOEXEC
-  fd = sandbox_open(p, flags|O_CLOEXEC, mode, rights);
+  fd = sandbox->sandbox_open(p, flags|O_CLOEXEC, mode, rights);
   if (fd >= 0) {
     goto end;
   }
@@ -198,12 +193,12 @@ tor_open_cloexec(const char *path, int flags, unsigned mode, void *rightsp)
 #endif /* defined(O_CLOEXEC) */
 
   log_debug(LD_FS, "Opening %s with flags %x", p, flags);
-  fd = sandbox_open(p, flags, mode, rights);
+  fd = sandbox->sandbox_open(p, flags, mode, rights);
 #ifdef FD_CLOEXEC
   if (fd >= 0) {
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
       log_warn(LD_FS,"Couldn't set FD_CLOEXEC: %s", strerror(errno));
-      sandbox_close(fd);
+      sandbox->sandbox_close(fd);
       fd = -1;
       goto end;
     }
@@ -241,7 +236,7 @@ tor_fopen_cloexec(const char *path, const char *mode)
   }
 
   result = NULL;
-  fd = sandbox_open(path, flags, fdmode, NULL);
+  fd = sandbox->sandbox_open(path, flags, fdmode, NULL);
   if (fd != -1)
     result = fdopen(fd, mode);
 
@@ -262,8 +257,8 @@ int
 tor_rename(const char *path_old, const char *path_new)
 {
   log_debug(LD_FS, "Renaming %s to %s", path_old, path_new);
-  return sandbox_rename(sandbox_intern_string(path_old),
-                sandbox_intern_string(path_new));
+  return sandbox->sandbox_rename(sandbox->sandbox_intern_string(path_old),
+                sandbox->sandbox_intern_string(path_new));
 }
 
 /* Some MinGW builds have sys/mman.h, but not the corresponding symbols.
@@ -315,7 +310,7 @@ tor_mmap_file(const char *filename)
     log_warn(LD_FS,
              "Couldn't fstat opened descriptor for \"%s\" during mmap: %s",
              filename, strerror(errno));
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
     errno = save_errno;
     return NULL;
   }
@@ -331,7 +326,7 @@ tor_mmap_file(const char *filename)
   if (st.st_size > SSIZE_T_CEILING || (off_t)size < st.st_size) {
     log_warn(LD_FS, "File \"%s\" is too large. Ignoring.",filename);
     errno = EFBIG;
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
     return NULL;
   }
   if (!size) {
@@ -339,12 +334,12 @@ tor_mmap_file(const char *filename)
      * return NULL, and bad things will happen. So just fail. */
     log_info(LD_FS,"File \"%s\" is empty. Ignoring.",filename);
     errno = ERANGE;
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
     return NULL;
   }
 
   string = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
-  sandbox_close(fd);
+  sandbox->sandbox_close(fd);
   if (string == MAP_FAILED) {
     int save_errno = errno;
     log_warn(LD_FS,"Could not mmap file \"%s\": %s", filename,
@@ -929,7 +924,7 @@ replace_file(const char *from, const char *to)
       break;
     case FN_FILE:
     case FN_EMPTY:
-      if (sandbox_unlink(to)) return -1;
+      if (sandbox->sandbox_unlink(to)) return -1;
       break;
     case FN_ERROR:
       return -1;
@@ -1005,7 +1000,7 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
       log_warn(LD_FS,"Couldn't lock \"%s\": %s", filename, strerror(errno));
     else
       *locked_out = 1;
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
     return NULL;
   }
 #elif defined(HAVE_FLOCK)
@@ -1014,7 +1009,7 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
       log_warn(LD_FS,"Couldn't lock \"%s\": %s", filename, strerror(errno));
     else
       *locked_out = 1;
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
     return NULL;
   }
 #else
@@ -1028,7 +1023,7 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
         log_warn(LD_FS, "Couldn't lock \"%s\": %s", filename, strerror(errno));
       else
         *locked_out = 1;
-      sandbox_close(fd);
+      sandbox->sandbox_close(fd);
       return NULL;
     }
   }
@@ -1062,7 +1057,7 @@ tor_lockfile_unlock(tor_lockfile_t *lockfile)
   /* Closing the lockfile is sufficient. */
 #endif /* defined(_WIN32) || ... */
 
-  sandbox_close(lockfile->fd);
+  sandbox->sandbox_close(lockfile->fd);
   lockfile->fd = -1;
   tor_free(lockfile->filename);
   tor_free(lockfile);
@@ -1191,7 +1186,7 @@ tor_close_socket_simple(tor_socket_t s)
   #if defined(_WIN32)
     r = closesocket(s);
   #else
-    r = sandbox_close(s);
+    r = sandbox->sandbox_close(s);
   #endif
 
   if (r != 0) {
@@ -1279,7 +1274,7 @@ MOCK_IMPL(tor_socket_t,
 tor_connect_socket,(tor_socket_t sock, const struct sockaddr *address,
                      socklen_t address_len))
 {
-  return sandbox_connect(sock,address,address_len);
+  return sandbox->sandbox_connect(sock,address,address_len);
 }
 
 /** As socket(), but creates a nonblocking socket and
@@ -1299,9 +1294,9 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
                                 int cloexec, int nonblock)
 {
   tor_socket_t s;
-#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_t rights;
 
+#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_init(&rights,
     CAP_ACCEPT,
     CAP_BIND,
@@ -1318,9 +1313,6 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
     CAP_SEEK,
     CAP_SEND,
     CAP_SETSOCKOPT);
-#else
-  char rights;
-  rights = 0;
 #endif
 
   /* We are about to create a new file descriptor so make sure we have
@@ -1337,7 +1329,7 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
 #if defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK)
   int ext_flags = (cloexec ? SOCK_CLOEXEC : 0) |
                   (nonblock ? SOCK_NONBLOCK : 0);
-  s = sandbox_socket(domain, type|ext_flags, protocol, &rights);
+  s = sandbox->sandbox_socket(domain, type|ext_flags, protocol, &rights);
   if (SOCKET_OK(s))
     goto socket_ok;
   /* If we got an error, see if it is EINVAL. EINVAL might indicate that,
@@ -1347,7 +1339,7 @@ tor_open_socket_with_extensions(int domain, int type, int protocol,
     return s;
 #endif /* defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK) */
 
-  s = sandbox_socket(domain, type, protocol, &rights);
+  s = sandbox->sandbox_socket(domain, type, protocol, &rights);
   if (! SOCKET_OK(s))
     return s;
 
@@ -1695,7 +1687,7 @@ tor_ersatz_socketpair(int family, int type, int protocol, tor_socket_t fd[2])
       goto tidy_up_and_fail;
     if (size != SIZEOF_SOCKADDR (connect_addr->sa_family))
       goto abort_tidy_up_and_fail;
-    if (sandbox_connect(connector, connect_addr, size) == -1)
+    if (sandbox->sandbox_connect(connector, connect_addr, size) == -1)
       goto tidy_up_and_fail;
 
     size = sizeof(listen_addr_ss);
@@ -3446,14 +3438,14 @@ get_total_system_memory_impl(void)
   if (sscanf(cp, "MemTotal: %llu kB\n", &result) != 1)
     goto err;
 
-  sandbox_close(fd);
+  sandbox->sandbox_close(fd);
   tor_free(s);
   return result * 1024;
 
   /* LCOV_EXCL_START Can't reach this unless proc is broken. */
  err:
   tor_free(s);
-  sandbox_close(fd);
+  sandbox->sandbox_close(fd);
   return 0;
   /* LCOV_EXCL_STOP */
 #elif defined (_WIN32)

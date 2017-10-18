@@ -118,6 +118,9 @@
 static void
 init_addrinfo(void)
 {
+  if (sandbox->sandbox_add_addrinfo == NULL)
+    return;
+
   if (! server_mode(get_options()) ||
       (get_options()->Address && strlen(get_options()->Address) > 0)) {
     /* We don't need to seed our own hostname, because we won't be calling
@@ -129,27 +132,27 @@ init_addrinfo(void)
 
   // host name to sandbox
   gethostname(hname, sizeof(hname));
-  sandbox_add_addrinfo(hname);
+  sandbox->sandbox_add_addrinfo(hname);
 }
 
 sandbox_cfg_t*
 sandbox_init_filter(void)
 {
   const or_options_t *options = get_options();
-  sandbox_cfg_t *cfg = sandbox_cfg_new();
+  sandbox_cfg_t *cfg = sandbox->sandbox_cfg_new();
   int i;
 
-  sandbox_cfg_allow_openat_filename(&cfg,
+  sandbox->sandbox_cfg_allow_openat_filename(&cfg,
       get_datadir_fname("cached-status"));
 
 #define OPEN(name)                              \
-  sandbox_cfg_allow_open_filename(&cfg, tor_strdup(name))
+  sandbox->sandbox_cfg_allow_open_filename(&cfg, tor_strdup(name))
 
 #define OPEN_DATADIR(name)                      \
-  sandbox_cfg_allow_open_filename(&cfg, get_datadir_fname(name))
+  sandbox->sandbox_cfg_allow_open_filename(&cfg, get_datadir_fname(name))
 
 #define OPEN_DATADIR2(name, name2)                       \
-  sandbox_cfg_allow_open_filename(&cfg, get_datadir_fname2((name), (name2)))
+  sandbox->sandbox_cfg_allow_open_filename(&cfg, get_datadir_fname2((name), (name2)))
 
 #define OPEN_DATADIR_SUFFIX(name, suffix) do {  \
     OPEN_DATADIR(name);                         \
@@ -194,24 +197,24 @@ sandbox_init_filter(void)
     OPEN_DATADIR("approved-routers");
 
   if (options->ServerDNSResolvConfFile)
-    sandbox_cfg_allow_open_filename(&cfg,
+    sandbox->sandbox_cfg_allow_open_filename(&cfg,
                                 tor_strdup(options->ServerDNSResolvConfFile));
   else
-    sandbox_cfg_allow_open_filename(&cfg, tor_strdup("/etc/resolv.conf"));
+    sandbox->sandbox_cfg_allow_open_filename(&cfg, tor_strdup("/etc/resolv.conf"));
 
   for (i = 0; i < 2; ++i) {
     if (get_torrc_fname(i)) {
-      sandbox_cfg_allow_open_filename(&cfg, tor_strdup(get_torrc_fname(i)));
+      sandbox->sandbox_cfg_allow_open_filename(&cfg, tor_strdup(get_torrc_fname(i)));
     }
   }
 
 #define RENAME_SUFFIX(name, suffix)        \
-  sandbox_cfg_allow_rename(&cfg,           \
+  sandbox->sandbox_cfg_allow_rename(&cfg,           \
       get_datadir_fname(name suffix),      \
       get_datadir_fname(name))
 
 #define RENAME_SUFFIX2(prefix, name, suffix) \
-  sandbox_cfg_allow_rename(&cfg,                                        \
+  sandbox->sandbox_cfg_allow_rename(&cfg,                                        \
                            get_datadir_fname2(prefix, name suffix),     \
                            get_datadir_fname2(prefix, name))
 
@@ -238,10 +241,10 @@ sandbox_init_filter(void)
     RENAME_SUFFIX("networkstatus-bridges", ".tmp");
 
 #define STAT_DATADIR(name)                      \
-  sandbox_cfg_allow_stat_filename(&cfg, get_datadir_fname(name))
+  sandbox->sandbox_cfg_allow_stat_filename(&cfg, get_datadir_fname(name))
 
 #define STAT_DATADIR2(name, name2)                                      \
-  sandbox_cfg_allow_stat_filename(&cfg, get_datadir_fname2((name), (name2)))
+  sandbox->sandbox_cfg_allow_stat_filename(&cfg, get_datadir_fname2((name), (name2)))
 
   STAT_DATADIR(NULL);
   STAT_DATADIR("lock");
@@ -254,7 +257,7 @@ sandbox_init_filter(void)
     tor_log_get_logfile_names(files);
     SMARTLIST_FOREACH(files, char *, file_name, {
       /* steals reference */
-      sandbox_cfg_allow_open_filename(&cfg, file_name);
+      sandbox->sandbox_cfg_allow_open_filename(&cfg, file_name);
     });
     smartlist_free(files);
   }
@@ -266,15 +269,15 @@ sandbox_init_filter(void)
     SMARTLIST_FOREACH(files, char *, file_name, {
       char *tmp_name = NULL;
       tor_asprintf(&tmp_name, "%s.tmp", file_name);
-      sandbox_cfg_allow_rename(&cfg,
+      sandbox->sandbox_cfg_allow_rename(&cfg,
                                tor_strdup(tmp_name), tor_strdup(file_name));
       /* steals references */
-      sandbox_cfg_allow_open_filename(&cfg, file_name);
-      sandbox_cfg_allow_open_filename(&cfg, tmp_name);
+      sandbox->sandbox_cfg_allow_open_filename(&cfg, file_name);
+      sandbox->sandbox_cfg_allow_open_filename(&cfg, tmp_name);
     });
     SMARTLIST_FOREACH(dirs, char *, dir, {
       /* steals reference */
-      sandbox_cfg_allow_stat_filename(&cfg, dir);
+      sandbox->sandbox_cfg_allow_stat_filename(&cfg, dir);
     });
     smartlist_free(files);
     smartlist_free(dirs);
@@ -283,10 +286,10 @@ sandbox_init_filter(void)
   {
     char *fname;
     if ((fname = get_controller_cookie_file_name())) {
-      sandbox_cfg_allow_open_filename(&cfg, fname);
+      sandbox->sandbox_cfg_allow_open_filename(&cfg, fname);
     }
     if ((fname = get_ext_or_auth_cookie_file_name())) {
-      sandbox_cfg_allow_open_filename(&cfg, fname);
+      sandbox->sandbox_cfg_allow_open_filename(&cfg, fname);
     }
   }
 
@@ -300,12 +303,12 @@ sandbox_init_filter(void)
       OPEN(dirname);
     }
     tor_free(dirname);
-    sandbox_cfg_allow_chmod_filename(&cfg, tor_strdup(port->unix_addr));
-    sandbox_cfg_allow_chown_filename(&cfg, tor_strdup(port->unix_addr));
+    sandbox->sandbox_cfg_allow_chmod_filename(&cfg, tor_strdup(port->unix_addr));
+    sandbox->sandbox_cfg_allow_chown_filename(&cfg, tor_strdup(port->unix_addr));
   } SMARTLIST_FOREACH_END(port);
 
   if (options->DirPortFrontPage) {
-    sandbox_cfg_allow_open_filename(&cfg,
+    sandbox->sandbox_cfg_allow_open_filename(&cfg,
                                     tor_strdup(options->DirPortFrontPage));
   }
 
@@ -367,10 +370,10 @@ sandbox_init_filter(void)
     RENAME_SUFFIX2("keys", "ed25519_signing_secret_key", ".tmp");
     RENAME_SUFFIX2("keys", "ed25519_signing_cert", ".tmp");
 
-    sandbox_cfg_allow_rename(&cfg,
+    sandbox->sandbox_cfg_allow_rename(&cfg,
              get_datadir_fname2("keys", "secret_onion_key"),
              get_datadir_fname2("keys", "secret_onion_key.old"));
-    sandbox_cfg_allow_rename(&cfg,
+    sandbox->sandbox_cfg_allow_rename(&cfg,
              get_datadir_fname2("keys", "secret_onion_key_ntor"),
              get_datadir_fname2("keys", "secret_onion_key_ntor.old"));
 

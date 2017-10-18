@@ -432,7 +432,7 @@ struct tm *tor_gmtime_r(const time_t *timep, struct tm *result);
 #endif /* !defined(timercmp) */
 
 /* ===== File compatibility */
-int tor_open_cloexec(const char *path, int flags, unsigned mode, void *);
+int tor_open_cloexec(const char *path, int flags, unsigned mode, cap_rights_t *);
 FILE *tor_fopen_cloexec(const char *path, const char *mode);
 int tor_rename(const char *path_old, const char *path_new);
 

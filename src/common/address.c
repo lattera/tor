@@ -272,7 +272,7 @@ tor_addr_lookup,(const char *name, uint16_t family, tor_addr_t *addr))
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
-    err = sandbox_getaddrinfo(name, NULL, &hints, &res);
+    err = sandbox->sandbox_getaddrinfo(name, NULL, &hints, &res);
     /* The check for 'res' here shouldn't be necessary, but it makes static
      * analysis tools happy. */
     if (!err && res) {
@@ -301,7 +301,7 @@ tor_addr_lookup,(const char *name, uint16_t family, tor_addr_t *addr))
                           &((struct sockaddr_in6*)best->ai_addr)->sin6_addr);
         result = 0;
       }
-      sandbox_freeaddrinfo(res);
+      sandbox->sandbox_freeaddrinfo(res);
       return result;
     }
     return (err == EAI_AGAIN) ? 1 : -1;
@@ -1583,7 +1583,7 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
   else if (family != AF_INET)
     return NULL;
 
-  fd = sandbox_socket(family, SOCK_DGRAM, 0, &rights);
+  fd = sandbox->sandbox_socket(family, SOCK_DGRAM, 0, &rights);
   if (fd < 0) {
     tor_log(severity, LD_NET, "socket failed: %s", strerror(errno));
     goto done;
@@ -1608,7 +1608,7 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
 
  done:
   if (fd >= 0)
-    sandbox_close(fd);
+    sandbox->sandbox_close(fd);
   tor_free(ifc.ifc_buf);
   return result;
 }

@@ -1375,7 +1375,7 @@ configure_nameservers(int force)
   evdns_set_log_fn(evdns_log_cb);
   if (conf_fname) {
     log_debug(LD_FS, "stat()ing %s", conf_fname);
-    if (sandbox_stat(sandbox_intern_string(conf_fname), &st)) {
+    if (sandbox->sandbox_stat(sandbox->sandbox_intern_string(conf_fname), &st)) {
       log_warn(LD_EXIT, "Unable to stat resolver configuration in '%s': %s",
                conf_fname, strerror(errno));
       goto err;
@@ -1394,12 +1394,12 @@ configure_nameservers(int force)
       flags ^= DNS_OPTION_HOSTSFILE;
       log_debug(LD_FS, "Loading /etc/hosts");
       evdns_base_load_hosts(the_evdns_base,
-          sandbox_intern_string("/etc/hosts"));
+          sandbox->sandbox_intern_string("/etc/hosts"));
     }
 #endif /* defined(DNS_OPTION_HOSTSFILE) && defined(USE_LIBSECCOMP) */
     log_info(LD_EXIT, "Parsing resolver configuration in '%s'", conf_fname);
     if ((r = evdns_base_resolv_conf_parse(the_evdns_base, flags,
-        sandbox_intern_string(conf_fname)))) {
+        sandbox->sandbox_intern_string(conf_fname)))) {
       log_warn(LD_EXIT, "Unable to parse '%s', or no nameservers in '%s' (%d)",
                conf_fname, conf_fname, r);
       goto err;

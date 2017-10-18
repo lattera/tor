@@ -2498,7 +2498,7 @@ do_main_loop(void)
      * upgraded.
      */
     char *fname = get_datadir_fname("key-pinning-entries");
-    sandbox_unlink(fname);
+    sandbox->sandbox_unlink(fname);
     tor_free(fname);
   }
 
@@ -3264,7 +3264,8 @@ tor_free_all(int postfork)
   routerparse_free_all();
   ext_orport_free_all();
   control_free_all();
-  sandbox_free_getaddrinfo_cache();
+  if (sandbox->sandbox_free_getaddrinfo_cache)
+    sandbox->sandbox_free_getaddrinfo_cache();
   protover_free_all();
   bridges_free_all();
   consdiffmgr_free_all();
@@ -3313,13 +3314,13 @@ tor_cleanup(void)
     /* Remove our pid file. We don't care if there was an error when we
      * unlink, nothing we could do about it anyways. */
     if (options->PidFile) {
-      if (sandbox_unlink(options->PidFile) != 0) {
+      if (sandbox->sandbox_unlink(options->PidFile) != 0) {
         log_warn(LD_FS, "Couldn't unlink pid file %s: %s",
                  options->PidFile, strerror(errno));
       }
     }
     if (options->ControlPortWriteToFile) {
-      if (sandbox_unlink(options->ControlPortWriteToFile) != 0) {
+      if (sandbox->sandbox_unlink(options->ControlPortWriteToFile) != 0) {
         log_warn(LD_FS, "Couldn't unlink control port file %s: %s",
                  options->ControlPortWriteToFile,
                  strerror(errno));
@@ -3351,7 +3352,8 @@ tor_cleanup(void)
   dmalloc_log_unfreed();
   dmalloc_shutdown();
 #endif
-  sandbox_cleanup();
+  if (sandbox->sandbox_fini != NULL)
+    sandbox->sandbox_fini();
 }
 
 /** Read/create keys as needed, and echo our fingerprint to stdout. */
@@ -3361,7 +3363,7 @@ do_list_fingerprint(void)
   char buf[FINGERPRINT_LEN+1];
   crypto_pk_t *k;
   const char *nickname = get_options()->Nickname;
-  sandbox_disable_getaddrinfo_cache();
+  sandbox->sandbox_disable_getaddrinfo_cache();
   if (!server_mode(get_options())) {
     log_err(LD_GENERAL,
             "Clients don't have long-term identity keys. Exiting.");
@@ -3440,6 +3442,11 @@ tor_main(int argc, char *argv[])
 {
   int result = 0;
 
+  if (sandbox_get_impl() == NULL) {
+    log_err(LD_BUG, "Unable to select sandbox implementation.");
+    return -1;
+  }
+
 #ifdef _WIN32
 #ifndef HeapEnableTerminationOnCorruption
 #define HeapEnableTerminationOnCorruption 1
@@ -3487,9 +3494,9 @@ tor_main(int argc, char *argv[])
     return -1;
 
   if (get_options()->Sandbox && get_options()->command == CMD_RUN_TOR) {
-    sandbox_cfg_t* cfg = sandbox_init_filter();
+    sandbox_cfg_t *cfg = sandbox_init_filter();
 
-    if (sandbox_init(cfg)) {
+    if (sandbox->sandbox_init != NULL && sandbox->sandbox_init(cfg)) {
       log_err(LD_BUG,"Failed to create syscall sandbox filter");
       return -1;
     }
@@ -3497,7 +3504,7 @@ tor_main(int argc, char *argv[])
     // registering libevent rng
 #ifdef HAVE_EVUTIL_SECURE_RNG_SET_URANDOM_DEVICE_FILE
     evutil_secure_rng_set_urandom_device_file(
-        (char*) sandbox_intern_string("/dev/urandom"));
+        (char*) sandbox->sandbox_intern_string("/dev/urandom"));
 #endif
   }
 

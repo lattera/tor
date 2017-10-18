@@ -18,7 +18,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 
-/* BEGIN UNUSED SANDBOX API */
+struct sandbox_impl;
+
 struct sandbox_cfg_elem {
   unsigned int unused;
 };
@@ -26,53 +27,8 @@ struct sandbox_cfg_elem {
 /** Typedef to structure used to manage a sandbox configuration. */
 typedef struct sandbox_cfg_elem sandbox_cfg_t;
 
-/** Creates an empty sandbox configuration file.*/
-sandbox_cfg_t * sandbox_cfg_new(void);
-
-/**
- * Function used to add a open allowed filename to a supplied configuration.
- * The (char*) specifies the path to the allowed file; we take ownership
- * of the pointer.
- */
-int sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file);
-int sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file);
-int sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file);
-
-/* DOCDOC */
-int sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2);
-
-/**
- * Function used to add a openat allowed filename to a supplied configuration.
- * The (char*) specifies the path to the allowed file; we steal the pointer to
- * that file.
- */
-int sandbox_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file);
-
-/**
- * Function used to add a stat/stat64 allowed filename to a configuration.
- * The (char*) specifies the path to the allowed file; that pointer is stolen.
- */
-int sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file);
-
-/** Function used to initialise a sandbox configuration.*/
-int sandbox_init(sandbox_cfg_t* cfg);
-
-/** Return true iff the sandbox is turned on. */
-int sandbox_is_active(void);
-
-void sandbox_disable_getaddrinfo_cache(void);
-
-sandbox_cfg_t *sandbox_init_filter(void);
-
-/* XXX TODO */
-#define sandbox_intern_string(s) (s)
-#define sandbox_add_addrinfo(name) \
-  ((void)(name))
-#define sandbox_free_getaddrinfo_cache()
-
-/* END UNUSED SANDBOX API */
-
-/* BEGIN FREEBSD SANDBOX API */
+struct sandbox_impl *sandbox_freebsd_get_impl(void);
+void fork_backend(void);
 
 #include <uuid.h>
 #include <sys/capsicum.h>
@@ -210,21 +166,6 @@ struct response {
 
 extern int backend_fd;
 extern int sandboxpid;
-
-int sandbox_open(const char *, int, mode_t, cap_rights_t *);
-int sandbox_mkdir(const char *, mode_t);
-int sandbox_unlink(const char *);
-int sandbox_socket(int, int, int, cap_rights_t *);
-int sandbox_getaddrinfo(const char *, const char *,
-    const struct addrinfo *, struct addrinfo **);
-void sandbox_freeaddrinfo(struct addrinfo *);
-int sandbox_connect(int, const struct sockaddr *, socklen_t);
-int sandbox_stat(const char *, struct stat *);
-int sandbox_rename(const char *, const char *);
-int sandbox_close(int);
-
-void fork_backend(void);
-void sandbox_cleanup(void);
 
 /* END FREEBSD SANDBOX API */
 

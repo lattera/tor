@@ -223,7 +223,7 @@ write_secret_key(const ed25519_secret_key_t *key, int encrypted,
 
       /* Try to unlink the unencrypted key, if any existed before */
       if (strcmp(fname, encrypted_fname))
-        sandbox_unlink(fname);
+        sandbox->sandbox_unlink(fname);
       return r;
     } else if (r != 0) {
       /* Unrecoverable failure! */
@@ -601,11 +601,11 @@ ed_key_init_from_file(const char *fname, uint32_t flags,
   if (cert_out)
     *cert_out = NULL;
   if (created_sk)
-    sandbox_unlink(secret_fname);
+    sandbox->sandbox_unlink(secret_fname);
   if (created_pk)
-    sandbox_unlink(public_fname);
+    sandbox->sandbox_unlink(public_fname);
   if (created_cert)
-    sandbox_unlink(cert_fname);
+    sandbox->sandbox_unlink(cert_fname);
 
  cleanup:
   tor_free(encrypted_secret_fname);

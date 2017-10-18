@@ -233,7 +233,7 @@ test_options_validate(void *arg)
 {
   (void)arg;
   setup_log_callback();
-  sandbox_disable_getaddrinfo_cache();
+  sandbox->sandbox_disable_getaddrinfo_cache();
 
   WANT_ERR("ExtORPort 500000", "Invalid ExtORPort", PH_VALIDATE);
 
@@ -737,7 +737,7 @@ test_options_validate__authdir(void *ignored)
                                  "AuthoritativeDirectory 1\n"
                                  "Address this.should.not!exist!.example.org");
 
-  sandbox_disable_getaddrinfo_cache();
+  sandbox->sandbox_disable_getaddrinfo_cache();
 
   MOCK(tor_addr_lookup, mock_tor_addr_lookup__fail_on_bad_addrs);
   ret = options_validate(tdata->old_opt, tdata->opt, tdata->def_opt, 0, &msg);
@@ -992,7 +992,7 @@ test_options_validate__authdir(void *ignored)
 
  done:
   teardown_capture_of_logs();
-  //  sandbox_free_getaddrinfo_cache();
+  //  sandbox->sandbox_free_getaddrinfo_cache();
   free_options_test_data(tdata);
   tor_free(msg);
 }
@@ -2831,7 +2831,7 @@ test_options_validate__proxy(void *ignored)
   int ret;
   char *msg;
   options_test_data_t *tdata = NULL;
-  sandbox_disable_getaddrinfo_cache();
+  sandbox->sandbox_disable_getaddrinfo_cache();
   setup_capture_of_logs(LOG_WARN);
   MOCK(tor_addr_lookup, mock_tor_addr_lookup__fail_on_bad_addrs);
 
@@ -3153,7 +3153,7 @@ test_options_validate__proxy(void *ignored)
   teardown_capture_of_logs();
   free_options_test_data(tdata);
   policies_free_all();
-  // sandbox_free_getaddrinfo_cache();
+  // sandbox->sandbox_free_getaddrinfo_cache();
   tor_free(msg);
   UNMOCK(tor_addr_lookup);
 }

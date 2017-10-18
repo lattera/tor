@@ -2917,11 +2917,15 @@ crypto_strongest_rand_fallback(uint8_t *out, size_t out_len)
 
   for (i = 0; filenames[i]; ++i) {
     log_debug(LD_FS, "Considering %s for entropy", filenames[i]);
-    fd = sandbox_open(sandbox_intern_string(filenames[i]), O_RDONLY, 0, NULL);
+    fd = sandbox->sandbox_open(sandbox->sandbox_intern_string(filenames[i]),
+        O_RDONLY, 0, NULL);
     if (fd<0) continue;
     log_info(LD_CRYPTO, "Reading entropy from \"%s\"", filenames[i]);
     n = read_all(fd, (char*)out, out_len, 0);
-    sandbox_close(fd);
+    if (sandbox)
+      sandbox->sandbox_close(fd);
+    else
+      close(fd);
     if (n != out_len) {
       /* LCOV_EXCL_START
        * We can't make /dev/foorandom actually fail. */

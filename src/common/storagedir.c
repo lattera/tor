@@ -89,11 +89,11 @@ storage_dir_register_with_sandbox(storage_dir_t *d, sandbox_cfg_t **cfg)
     tor_asprintf(&path, "%s/%d", d->directory, idx);
     tor_asprintf(&tmppath, "%s/%d.tmp", d->directory, idx);
 
-    problems += sandbox_cfg_allow_open_filename(cfg, tor_strdup(path));
-    problems += sandbox_cfg_allow_open_filename(cfg, tor_strdup(tmppath));
-    problems += sandbox_cfg_allow_stat_filename(cfg, tor_strdup(path));
-    problems += sandbox_cfg_allow_stat_filename(cfg, tor_strdup(tmppath));
-    problems += sandbox_cfg_allow_rename(cfg,
+    problems += sandbox->sandbox_cfg_allow_open_filename(cfg, tor_strdup(path));
+    problems += sandbox->sandbox_cfg_allow_open_filename(cfg, tor_strdup(tmppath));
+    problems += sandbox->sandbox_cfg_allow_stat_filename(cfg, tor_strdup(path));
+    problems += sandbox->sandbox_cfg_allow_stat_filename(cfg, tor_strdup(tmppath));
+    problems += sandbox->sandbox_cfg_allow_rename(cfg,
                                       tor_strdup(tmppath), tor_strdup(path));
 
     tor_free(path);
@@ -118,7 +118,7 @@ storage_dir_clean_tmpfiles(storage_dir_t *d)
       continue;
     char *path = NULL;
     tor_asprintf(&path, "%s/%s", d->directory, fname);
-    if (sandbox_unlink(sandbox_intern_string(path))) {
+    if (sandbox->sandbox_unlink(sandbox->sandbox_intern_string(path))) {
       log_warn(LD_FS, "Unable to unlink %s while cleaning "
                "temporary files: %s", escaped(path), strerror(errno));
       tor_free(path);
@@ -176,7 +176,7 @@ storage_dir_get_usage(storage_dir_t *d)
     char *path = NULL;
     struct stat st;
     tor_asprintf(&path, "%s/%s", d->directory, cp);
-    if (sandbox_stat(sandbox_intern_string(path), &st) == 0) {
+    if (sandbox->sandbox_stat(sandbox->sandbox_intern_string(path), &st) == 0) {
       total += st.st_size;
     }
     tor_free(path);
@@ -444,16 +444,16 @@ storage_dir_remove_file(storage_dir_t *d,
 {
   char *path = NULL;
   tor_asprintf(&path, "%s/%s", d->directory, fname);
-  const char *ipath = sandbox_intern_string(path);
+  const char *ipath = sandbox->sandbox_intern_string(path);
 
   uint64_t size = 0;
   if (d->usage_known) {
     struct stat st;
-    if (sandbox_stat(ipath, &st) == 0) {
+    if (sandbox->sandbox_stat(ipath, &st) == 0) {
       size = st.st_size;
     }
   }
-  if (sandbox_unlink(ipath) == 0) {
+  if (sandbox->sandbox_unlink(ipath) == 0) {
     storage_dir_reduce_usage(d, size);
   } else {
     log_warn(LD_FS, "Unable to unlink %s while removing file: %s",
@@ -523,7 +523,7 @@ storage_dir_shrink(storage_dir_t *d,
     shrinking_dir_entry_t *ent = &ents[fname_sl_idx];
     struct stat st;
     tor_asprintf(&ent->path, "%s/%s", d->directory, fname);
-    if (sandbox_stat(sandbox_intern_string(ent->path), &st) == 0) {
+    if (sandbox->sandbox_stat(sandbox->sandbox_intern_string(ent->path), &st) == 0) {
       ent->mtime = st.st_mtime;
       ent->size = st.st_size;
     }
@@ -533,7 +533,7 @@ storage_dir_shrink(storage_dir_t *d,
 
   int idx = 0;
   while ((d->usage > target_size || min_to_remove > 0) && idx < n) {
-    if (sandbox_unlink(sandbox_intern_string(ents[idx].path)) == 0) {
+    if (sandbox->sandbox_unlink(sandbox->sandbox_intern_string(ents[idx].path)) == 0) {
       storage_dir_reduce_usage(d, ents[idx].size);
       --min_to_remove;
     }

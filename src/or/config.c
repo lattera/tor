@@ -1275,7 +1275,7 @@ options_act_reversible(const or_options_t *old_options, char **msg)
   if (running_tor) {
     int n_ports=0;
     /* We need to set the connection limit before we can open the listeners. */
-    if (! sandbox_is_active()) {
+    if (! sandbox->sandbox_is_active()) {
       if (set_max_file_descriptors((unsigned)options->ConnLimit,
                                    &options->ConnLimit_) < 0) {
         *msg = tor_strdup("Problem with ConnLimit value. "
@@ -1802,7 +1802,7 @@ options_act(const or_options_t *old_options)
 
   /* Write our PID to the PID file. If we do not have write permissions we
    * will log a warning and exit. */
-  if (options->PidFile && !sandbox_is_active()) {
+  if (options->PidFile && !sandbox->sandbox_is_active()) {
     if (write_pidfile(options->PidFile) < 0) {
       log_err(LD_CONFIG, "Unable to write PIDFile %s",
               escaped(options->PidFile));
@@ -4572,7 +4572,7 @@ options_transition_allowed(const or_options_t *old,
     return -1;
   }
 
-  if (sandbox_is_active()) {
+  if (sandbox->sandbox_is_active()) {
 #define SB_NOCHANGE_STR(opt)                                            \
     do {                                                                \
       if (! opt_streq(old->opt, new_val->opt)) {                        \
@@ -7811,13 +7811,13 @@ remove_file_if_very_old(const char *fname, time_t now)
   struct stat st;
 
   log_debug(LD_FS, "stat()ing %s", fname);
-  if (sandbox_stat(sandbox_intern_string(fname), &st)==0 &&
+  if (sandbox->sandbox_stat(sandbox->sandbox_intern_string(fname), &st)==0 &&
       st.st_mtime < now-VERY_OLD_FILE_AGE) {
     char buf[ISO_TIME_LEN+1];
     format_local_iso_time(buf, st.st_mtime);
     log_notice(LD_GENERAL, "Obsolete file %s hasn't been modified since %s. "
                "Removing it.", fname, buf);
-    if (sandbox_unlink(fname) != 0) {
+    if (sandbox->sandbox_unlink(fname) != 0) {
       log_warn(LD_FS, "Failed to unlink %s: %s",
                fname, strerror(errno));
     }

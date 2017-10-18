@@ -98,8 +98,7 @@ LIBTOR_A_SOURCES = \
 	src/or/routerlist.c				\
 	src/or/routerparse.c				\
 	src/or/routerset.c				\
-	src/or/sandbox_freebsd.c			\
-	src/or/sandbox_linux.c				\
+	src/or/sandbox_or.c				\
 	src/or/scheduler.c				\
 	src/or/scheduler_kist.c				\
 	src/or/scheduler_vanilla.c			\

@@ -268,8 +268,8 @@ shutdown_backend(void)
   return;
 }
 
-int
-sandbox_open(const char *path, int flags, mode_t mode,
+static int
+sandbox_freebsd_open(const char *path, int flags, mode_t mode,
     cap_rights_t *rights)
 {
   struct response_wrapper *wrapper;
@@ -302,8 +302,8 @@ sandbox_open(const char *path, int flags, mode_t mode,
   return (fd);
 }
 
-int
-sandbox_unlink(const char *path)
+static int
+sandbox_freebsd_unlink(const char *path)
 {
   struct response_wrapper *wrapper;
   struct request request;
@@ -340,8 +340,8 @@ sandbox_unlink(const char *path)
   return (res == ERROR_FAIL ? -1 : 0);
 }
 
-int
-sandbox_socket(int domain, int type, int protocol,
+static int
+sandbox_freebsd_socket(int domain, int type, int protocol,
     cap_rights_t *rights)
 {
   struct response_wrapper *wrapper;
@@ -370,8 +370,30 @@ sandbox_socket(int domain, int type, int protocol,
   return (fd);
 }
 
-int
-sandbox_getaddrinfo(const char *name, const char *servname,
+static void
+sandbox_freebsd_freeaddrinfo(struct addrinfo *ai)
+{
+  struct addrinfo *next;
+
+  if (!active) {
+    freeaddrinfo(ai);
+    return;
+  }
+
+  while (ai != NULL) {
+    next = ai->ai_next;
+    if (ai->ai_addr != NULL) {
+      memset(ai->ai_addr, 0, ai->ai_addrlen);
+      tor_free(ai->ai_addr);
+    }
+    memset(ai, 0, sizeof(*ai));
+    tor_free(ai);
+    ai = next;
+  }
+}
+
+static int
+sandbox_freebsd_getaddrinfo(const char *name, const char *servname,
     const struct addrinfo *hints,
     struct addrinfo **res)
 {
@@ -499,7 +521,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
 
  end:
   if (retval == -1 && *res != NULL) {
-    sandbox_freeaddrinfo(*res);
+    sandbox_freebsd_freeaddrinfo(*res);
     *res = NULL;
   }
   if (responses != NULL) {
@@ -510,30 +532,8 @@ sandbox_getaddrinfo(const char *name, const char *servname,
   return (retval);
 }
 
-void
-sandbox_freeaddrinfo(struct addrinfo *ai)
-{
-  struct addrinfo *next;
-
-  if (!active) {
-    freeaddrinfo(ai);
-    return;
-  }
-
-  while (ai != NULL) {
-    next = ai->ai_next;
-    if (ai->ai_addr != NULL) {
-      memset(ai->ai_addr, 0, ai->ai_addrlen);
-      tor_free(ai->ai_addr);
-    }
-    memset(ai, 0, sizeof(*ai));
-    tor_free(ai);
-    ai = next;
-  }
-}
-
-int
-sandbox_connect(int sockfd, const struct sockaddr *name, socklen_t namelen)
+static int
+sandbox_freebsd_connect(int sockfd, const struct sockaddr *name, socklen_t namelen)
 {
   struct response_wrapper *wrapper;
   struct request request;
@@ -593,8 +593,8 @@ sandbox_connect(int sockfd, const struct sockaddr *name, socklen_t namelen)
   return (0);
 }
 
-int
-sandbox_mkdir(const char *path, mode_t mode)
+static int
+sandbox_freebsd_mkdir(const char *path, mode_t mode)
 {
   struct request request;
   struct response response;
@@ -628,8 +628,8 @@ sandbox_mkdir(const char *path, mode_t mode)
   return (response.r_code == ERROR_NONE ? 0 : -1);
 }
 
-int
-sandbox_stat(const char *path, struct stat *sb)
+static int
+sandbox_freebsd_stat(const char *path, struct stat *sb)
 {
   struct response_stat response;
   struct request request;
@@ -675,8 +675,8 @@ sandbox_stat(const char *path, struct stat *sb)
   return (0);
 }
 
-int
-sandbox_rename(const char *from, const char *to)
+static int
+sandbox_freebsd_rename(const char *from, const char *to)
 {
   struct generic_response response;
   struct request request;
@@ -729,8 +729,8 @@ sandbox_rename(const char *from, const char *to)
   return (0);
 }
 
-int
-sandbox_close(int fd)
+static int
+sandbox_freebsd_close(int fd)
 {
   struct uuids *u;
   int res;
@@ -756,14 +756,8 @@ sandbox_close(int fd)
   return (res);
 }
 
-sandbox_cfg_t*
-sandbox_cfg_new(void)
-{
-  return NULL;
-}
-
-int
-sandbox_init(sandbox_cfg_t *cfg)
+static int
+sandbox_freebsd_init(sandbox_cfg_t *cfg)
 {
   time_t clock;
   (void)cfg;
@@ -787,8 +781,8 @@ sandbox_init(sandbox_cfg_t *cfg)
   return 0;
 }
 
-int
-sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
   char **p;
 
@@ -814,64 +808,102 @@ sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-int
-sandbox_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_freebsd_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
 {
 
-  return sandbox_cfg_allow_open_filename(cfg, file);
+  return sandbox_freebsd_cfg_allow_open_filename(cfg, file);
 }
 
-int
-sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_freebsd_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
 {
 
-  return sandbox_cfg_allow_open_filename(cfg, file);
+  return sandbox_freebsd_cfg_allow_open_filename(cfg, file);
 }
 
-int
-sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_freebsd_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
 {
 
-  return sandbox_cfg_allow_open_filename(cfg, file);
+  return sandbox_freebsd_cfg_allow_open_filename(cfg, file);
 }
 
-int
-sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_freebsd_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
 {
 
-  return sandbox_cfg_allow_open_filename(cfg, file);
+  return sandbox_freebsd_cfg_allow_open_filename(cfg, file);
 }
 
-int
-sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
+static int
+sandbox_freebsd_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
 {
   int res;
 
-  res = sandbox_cfg_allow_open_filename(cfg, file1);
+  res = sandbox_freebsd_cfg_allow_open_filename(cfg, file1);
   if (res == 0)
-    res = sandbox_cfg_allow_open_filename(cfg, file2);
+    res = sandbox_freebsd_cfg_allow_open_filename(cfg, file2);
 
   return res;
 }
 
-int
-sandbox_is_active(void)
+static int
+sandbox_freebsd_is_active(void)
 {
   return active;
 }
 
-void
-sandbox_disable_getaddrinfo_cache(void)
+static const char *
+sandbox_freebsd_intern_string(const char *str)
 {
+  return str;
 }
 
-void
-sandbox_cleanup(void)
+static void
+sandbox_freebsd_cleanup(void)
 {
   if (active) {
     shutdown_backend();
     pthread_mutex_destroy(&sandbox_mtx);
   }
 }
+
+static sandbox_cfg_t *
+sandbox_freebsd_cfg_new(void)
+{
+  return NULL;
+}
+
+static sandbox_impl_t sandbox_freebsd_impl = {
+  .sandbox_init = sandbox_freebsd_init,
+  .sandbox_fini = sandbox_freebsd_cleanup,
+  .sandbox_cfg_new = sandbox_freebsd_cfg_new,
+  .sandbox_is_active = sandbox_freebsd_is_active,
+  .sandbox_open = sandbox_freebsd_open,
+  .sandbox_mkdir = sandbox_freebsd_mkdir,
+  .sandbox_unlink = sandbox_freebsd_unlink,
+  .sandbox_socket = sandbox_freebsd_socket,
+  .sandbox_getaddrinfo = sandbox_freebsd_getaddrinfo,
+  .sandbox_freeaddrinfo = sandbox_freebsd_freeaddrinfo,
+  .sandbox_connect = sandbox_freebsd_connect,
+  .sandbox_stat = sandbox_freebsd_stat,
+  .sandbox_rename = sandbox_freebsd_rename,
+  .sandbox_close = sandbox_freebsd_close,
+  .sandbox_cfg_allow_open_filename = sandbox_freebsd_cfg_allow_open_filename,
+  .sandbox_cfg_allow_openat_filename = sandbox_freebsd_cfg_allow_openat_filename,
+  .sandbox_cfg_allow_stat_filename = sandbox_freebsd_cfg_allow_stat_filename,
+  .sandbox_cfg_allow_chown_filename = sandbox_freebsd_cfg_allow_chown_filename,
+  .sandbox_cfg_allow_chmod_filename = sandbox_freebsd_cfg_allow_chmod_filename,
+  .sandbox_cfg_allow_rename = sandbox_freebsd_cfg_allow_rename,
+  .sandbox_intern_string = sandbox_freebsd_intern_string,
+};
+
+sandbox_impl_t *
+sandbox_freebsd_get_impl(void)
+{
+  return &sandbox_freebsd_impl;
+}
+
 #endif /* HAVE_SYS_CAPSICUM_H */
 
