@@ -23,6 +23,8 @@
 #include "util.h"
 #include "tor_queue.h"
 
+#include <fcntl.h>
+
 #if HAVE_SYS_CAPSICUM_H
 
 #include <sys/procdesc.h>
@@ -49,6 +51,48 @@ static pthread_mutex_t sandbox_mtx;
 int backend_fd;
 
 static size_t nuuids, ndirs;
+
+static void
+add_directory_descriptor(int fd, char *path)
+{
+  void *p;
+
+  p = tor_reallocarray(dirfds, sizeof(*dirfds), ndirs + 1);
+  if (p == NULL)
+    return;
+
+  dirfds = p;
+
+  dirfds[ndirs].fd = fd;
+  dirfds[ndirs].path = tor_strdup(path);
+  ndirs++;
+}
+
+static struct dirfd *
+lookup_directory(char *file)
+{
+  size_t i;
+
+  for (i = 0; i < ndirs; i++) {
+    if (!strncmp(file, dirfds[i].path, strlen(dirfds[i].path)))
+      return &(dirfds[i]);
+  }
+
+  return NULL;
+}
+
+static int
+lookup_directory_descriptor(char *file)
+{
+  struct dirfd *entry;
+
+  entry = lookup_directory(file);
+
+  if (entry != NULL)
+    return entry->fd;
+
+  return -1;
+}
 
 static int
 sandbox_freebsd_is_active(void)
@@ -188,30 +232,6 @@ send_request(struct request *request)
 }
 
 static struct response_wrapper *
-open_file(const char *path, int flags, mode_t mode, cap_rights_t *rights)
-{
-  struct response_wrapper *wrapper;
-  struct request request;
-
-  memset(&request, 0, sizeof(request));
-
-  strlcpy(request.r_payload.u_add_file_path.r_path, path,
-      sizeof(request.r_payload.u_add_file_path.r_path));
-  request.r_payload.u_add_file_path.r_flags = flags;
-  request.r_payload.u_add_file_path.r_mode = mode;
-  if (rights != NULL) {
-    request.r_payload.u_add_file_path.r_features |= F_FEATURE_CAP;
-    memcpy(&(request.r_payload.u_add_file_path.r_rights), rights,
-        sizeof(request.r_payload.u_add_file_path.r_rights));
-  }
-
-  wrapper = send_request(&request);
-  if (wrapper != NULL && wrapper->response.r_code == ERROR_NONE)
-    add_uuid(wrapper->fd, &(wrapper->response.r_uuid));
-  return (wrapper);
-}
-
-static struct response_wrapper *
 create_socket(int domain, int type, int protocol,
     cap_rights_t *rights)
 {
@@ -271,27 +291,39 @@ static int
 sandbox_freebsd_open(const char *path, int flags, mode_t mode,
     cap_rights_t *rights)
 {
-  struct response_wrapper *wrapper;
+  const char *relpath;
+  struct dirfd *dirfd;
   int fd;
 
   if (!sandbox_freebsd_is_active())
-    return (open(path, flags, mode));
+    return open(path, flags, mode);
 
-  pthread_mutex_lock(&sandbox_mtx);
-
-  fd = -1;
-  wrapper = open_file(path, flags, mode, rights);
-  if (wrapper == NULL)
-    goto end;
-  fd = wrapper->fd;
-
-  if (wrapper->response.r_code != ERROR_NONE) {
-    fd = -1;
-    errno = wrapper->response.r_errno;
+  /* The path passed in must be the fully-qualified path */
+  if (path[0] != '/') {
+    errno = EPERM;
+    return -1;
   }
 
- end:
-  pthread_mutex_unlock(&sandbox_mtx);
+  dirfd = lookup_directory(path);
+  if (dirfd == NULL) {
+    errno = EPERM;
+    return -1;
+  }
+
+  /* The following logic assumes that strlen(path) >
+   * strlen(dirfd->path) + 1. */
+  if (strlen(path) < strlen(dirfd->path) + 1) {
+    errno = EPERM;
+    return -1;
+  }
+
+  relpath = path;
+  if (relpath[0] == '/')
+    relpath += strlen(dirfd->path) + 1;
+
+  fd = openat(dirfd->fd, relpath, flags, mode);
+  if (fd != -1 && rights != NULL)
+    cap_rights_limit(fd, rights);
 
   return (fd);
 }
@@ -752,6 +784,8 @@ static int
 sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
   char **p;
+  int fd;
+  struct stat sb;
 
   (void)cfg;
 
@@ -760,6 +794,19 @@ sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 
   if (file == NULL || file[0] != '/')
 	  return 0;
+
+  fd = open(file, O_RDONLY);
+  if (fd != -1) {
+    if (fstat(fd, &sb)) {
+      close(fd);
+      return -1;
+    }
+
+    if (!S_ISDIR(sb.st_mode))
+      return 0;
+
+    add_directory_descriptor(fd, file);
+  }
 
   return 0;
 }

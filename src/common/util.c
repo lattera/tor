@@ -2240,7 +2240,7 @@ check_private_dir,(const char *dirname, cpd_check_t check,
   cap_rights_t rights;
 
 #ifdef HAVE_SYS_CAPSICUM_H
-  cap_rights_init(&rights, CAP_FSTAT);
+  cap_rights_init(&rights, CAP_FSTAT, CAP_READ);
 #endif
 
   /*
