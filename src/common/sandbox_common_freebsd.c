@@ -621,31 +621,12 @@ sandbox_freebsd_connect(int sockfd, const struct sockaddr *name, socklen_t namel
 static int
 sandbox_freebsd_mkdir(const char *path, mode_t mode)
 {
-  struct request request;
-  struct response response;
+  if (sandbox_freebsd_is_active()) {
+    errno = EPERM;
+    return -1;
+  }
 
-  if (!sandbox_freebsd_is_active())
-    return (mkdir(path, mode));
-
-  pthread_mutex_lock(&sandbox_mtx);
-
-  memset(&request, 0, sizeof(request));
-  memset(&response, 0, sizeof(response));
-
-  request.r_type = MKDIR;
-  request.r_payload.u_mkdir.r_mode = mode;
-  strlcpy(request.r_payload.u_mkdir.r_path, path,
-      sizeof(request.r_payload.u_mkdir.r_path));
-
-  send(backend_fd, &request, sizeof(request), 0);
-  recv(backend_fd, &response, sizeof(response), 0);
-
-  if (response.r_code != ERROR_NONE)
-    errno = response.r_errno;
-
-  pthread_mutex_unlock(&sandbox_mtx);
-
-  return (response.r_code == ERROR_NONE ? 0 : -1);
+  return mkdir(path, mode);
 }
 
 static int

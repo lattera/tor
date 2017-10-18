@@ -387,7 +387,6 @@ sandbox_init_filter(void)
 
 #ifdef HAVE_SYS_CAPSICUM_H
   sandbox->sandbox_cfg_allow_open_filename(&cfg, "/dev");
-  sandbox->sandbox_cfg_allow_open_filename(&cfg, "/tmp");
 #endif
 
   init_addrinfo();
