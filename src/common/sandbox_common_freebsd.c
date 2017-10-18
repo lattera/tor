@@ -63,6 +63,19 @@ sandbox_freebsd_is_active(void)
   return mode;
 }
 
+static struct dirfd *
+lookup_directory(char *file)
+{
+  size_t i;
+
+  for (i = 0; i < ndirs; i++) {
+    if (!strncmp(file, dirfds[i].path, strlen(dirfds[i].path)))
+      return &(dirfds[i]);
+  }
+
+  return NULL;
+}
+
 static void
 add_directory_descriptor(int fd, char *path)
 {
@@ -80,19 +93,6 @@ add_directory_descriptor(int fd, char *path)
   dirfds[ndirs].fd = fd;
   dirfds[ndirs].path = tor_strdup(path);
   ndirs++;
-}
-
-static struct dirfd *
-lookup_directory(char *file)
-{
-  size_t i;
-
-  for (i = 0; i < ndirs; i++) {
-    if (!strncmp(file, dirfds[i].path, strlen(dirfds[i].path)))
-      return &(dirfds[i]);
-  }
-
-  return NULL;
 }
 
 static int
@@ -333,34 +333,36 @@ sandbox_freebsd_open(const char *path, int flags, mode_t mode,
 static int
 sandbox_freebsd_unlink(const char *path)
 {
-  struct response_wrapper *wrapper;
-  struct request request;
-  int res;
+  const char *relpath;
+  struct dirfd *dirfd;
+  int fd;
 
   if (!sandbox_freebsd_is_active())
-    return (unlink(path));
+    return unlink(path);
 
-  pthread_mutex_lock(&sandbox_mtx);
-
-  memset(&request, 0, sizeof(request));
-
-  request.r_type = UNLINK_PATH;
-  strlcpy(request.r_payload.u_unlink_path.r_path, path,
-      sizeof(request.r_payload.u_unlink_path.r_path));
-
-  wrapper = send_request(&request);
-  if (wrapper == NULL) {
-    pthread_mutex_unlock(&sandbox_mtx);
-    return (0);
+  /* The path passed in must be the fully-qualified path */
+  if (path[0] != '/') {
+    errno = EPERM;
+    return -1;
   }
 
-  res = wrapper->response.r_code;
-  if (res == ERROR_FAIL)
-    errno = wrapper->response.r_errno;
+  dirfd = lookup_directory(path);
+  if (dirfd == NULL) {
+    errno = EPERM;
+    return -1;
+  }
 
-  pthread_mutex_unlock(&sandbox_mtx);
-  tor_free(wrapper);
-  return (res == ERROR_FAIL ? -1 : 0);
+  /* The following logic assumes that strlen(path) >
+   * strlen(dirfd->path) + 1. */
+  if (strlen(path) < strlen(dirfd->path) + 1) {
+    errno = EPERM;
+    return -1;
+  }
+
+  relpath = path;
+  relpath += strlen(dirfd->path) + 1;
+
+  return unlinkat(dirfd->fd, relpath, 0);
 }
 
 static int
