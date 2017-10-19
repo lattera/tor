@@ -43,6 +43,7 @@
 #endif
 
 #include "compat_time.h"
+#include "sandbox.h"
 
 #if defined(__has_feature)
 #  if __has_feature(address_sanitizer)

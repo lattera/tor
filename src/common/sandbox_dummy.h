@@ -10,11 +10,9 @@
 #define SANDBOX_FREEBSD_H_
 
 #include "orconfig.h"
-#include "torint.h"
 
-#include <sys/capsicum.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netdb.h>
 

@@ -125,13 +125,26 @@ sandbox_dummy_is_active(void)
   return 0;
 }
 
-static char *
-sandbox_dummy_intern_string(char *str)
+static const char *
+sandbox_dummy_intern_string(const char *str)
 {
   return str;
 }
 
+static int
+sandbox_dummy_init(sandbox_cfg_t *cfg)
+{
+  return 0;
+}
+
+static sandbox_cfg_t *
+sandbox_dummy_cfg_new(void)
+{
+    return NULL;
+}
+
 static sandbox_impl_t sandbox_dummy_impl = {
+  .sandbox_init = sandbox_dummy_init,
   .sandbox_is_active = sandbox_dummy_is_active,
   .sandbox_open = sandbox_dummy_open,
   .sandbox_mkdir = sandbox_dummy_mkdir,
@@ -143,6 +156,7 @@ static sandbox_impl_t sandbox_dummy_impl = {
   .sandbox_stat = sandbox_dummy_stat,
   .sandbox_rename = sandbox_dummy_rename,
   .sandbox_close = sandbox_dummy_close,
+  .sandbox_cfg_new = sandbox_dummy_cfg_new,
   .sandbox_cfg_allow_open_filename = sandbox_dummy_cfg_allow_open_filename,
   .sandbox_cfg_allow_openat_filename = sandbox_dummy_cfg_allow_openat_filename,
   .sandbox_cfg_allow_stat_filename = sandbox_dummy_cfg_allow_stat_filename,

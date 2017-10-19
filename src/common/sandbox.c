@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "orconfig.h"
 #include "sandbox.h"
 
