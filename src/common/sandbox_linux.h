@@ -9,7 +9,7 @@
 #include <fcntl.h>
 
 struct sandbox_impl;
-typedef char cap_rights_t;
+typedef unsigned long cap_rights_t;
 
 #ifndef SYS_SECCOMP
 

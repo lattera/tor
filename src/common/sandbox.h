@@ -43,6 +43,7 @@ typedef struct sandbox_impl {
 extern sandbox_impl_t *sandbox;
 
 sandbox_impl_t *sandbox_get_impl(void);
+sandbox_cfg_t *sandbox_init_filter(void);
 
 #endif
 
