@@ -3,12 +3,13 @@
 
 #include "orconfig.h"
 
-#ifdef HAVE_SYS_CAPSICUM_H
+#if defined(HAVE_SYS_CAPSICUM_H)
 #include <sys/capsicum.h>
 #include "sandbox_freebsd.h"
+#elif defined(HAVE_SECCOMP_H)
+#include "sandbox_linux.h"
 #else
 #include "sandbox_dummy.h"
-typedef char cap_rights_t;
 #endif
 
 typedef struct sandbox_impl {

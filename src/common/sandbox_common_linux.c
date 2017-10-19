@@ -11,7 +11,7 @@
 
 #include "orconfig.h"
 
-#if !HAVE_SYS_CAPSICUM_H
+#ifdef HAVE_SECCOMP_H
 
 #ifndef _LARGEFILE64_SOURCE
 /**
@@ -44,8 +44,6 @@
 #include "ht.h"
 
 #define DEBUGGING_CLOSE
-
-#if defined(USE_LIBSECCOMP)
 
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -264,6 +262,12 @@ static int filter_nopar_gen[] = {
   seccomp_rule_add((ctx),(act),(call),3,(f1),(f2),(f3))
 #define seccomp_rule_add_4(ctx,act,call,f1,f2,f3,f4)      \
   seccomp_rule_add((ctx),(act),(call),4,(f1),(f2),(f3),(f4))
+
+static int
+sandbox_seccomp_is_active(void)
+{
+  return sandbox_active != 0;
+}
 
 /**
  * Function responsible for setting up the rt_sigaction syscall for
@@ -1097,8 +1101,8 @@ static sandbox_filter_func_t filter_func[] = {
 #endif
 };
 
-const char *
-sandbox_intern_string(const char *str)
+static const char *
+sandbox_seccomp_intern_string(const char *str)
 {
   sandbox_cfg_t *elem;
 
@@ -1314,8 +1318,8 @@ new_element(int syscall, char *value)
 #define SCMP_stat SCMP_SYS(stat)
 #endif
 
-int
-sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_seccomp_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
@@ -1331,8 +1335,8 @@ sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-int
-sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_seccomp_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
@@ -1348,8 +1352,8 @@ sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-int
-sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_seccomp_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
@@ -1365,8 +1369,8 @@ sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-int
-sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_seccomp_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
@@ -1382,8 +1386,8 @@ sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-int
-sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
+static int
+sandbox_seccomp_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
 {
   sandbox_cfg_t *elem = NULL;
 
@@ -1400,8 +1404,8 @@ sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
   return 0;
 }
 
-int
-sandbox_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
+static int
+sandbox_seccomp_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
@@ -1476,21 +1480,21 @@ static int sandbox_getaddrinfo_cache_disabled = 0;
 /** Tell the sandbox layer not to try to cache getaddrinfo results. Used as in
  * tor-resolve, when we have no intention of initializing crypto or of
  * installing the sandbox.*/
-void
-sandbox_disable_getaddrinfo_cache(void)
+static void
+sandbox_seccomp_disable_getaddrinfo_cache(void)
 {
   sandbox_getaddrinfo_cache_disabled = 1;
 }
 
-void
-sandbox_freeaddrinfo(struct addrinfo *ai)
+static void
+sandbox_seccomp_freeaddrinfo(struct addrinfo *ai)
 {
   if (sandbox_getaddrinfo_cache_disabled)
     freeaddrinfo(ai);
 }
 
-int
-sandbox_getaddrinfo(const char *name, const char *servname,
+static int
+sandbox_seccomp_getaddrinfo(const char *name, const char *servname,
                     const struct addrinfo *hints,
                     struct addrinfo **res)
 {
@@ -1517,7 +1521,7 @@ sandbox_getaddrinfo(const char *name, const char *servname,
   search.family = hints ? hints->ai_family : AF_UNSPEC;
   item = HT_FIND(getaddrinfo_cache, &getaddrinfo_cache, &search);
 
-  if (! sandbox_is_active()) {
+  if (! sandbox_seccomp_is_active()) {
     /* If the sandbox is not turned on yet, then getaddrinfo and store the
        result. */
 
@@ -1552,8 +1556,8 @@ sandbox_getaddrinfo(const char *name, const char *servname,
   return EAI_NONAME;
 }
 
-int
-sandbox_add_addrinfo(const char *name)
+static int
+sandbox_seccomp_add_addrinfo(const char *name)
 {
   struct addrinfo *res;
   struct addrinfo hints;
@@ -1566,16 +1570,16 @@ sandbox_add_addrinfo(const char *name)
     hints.ai_family = families[i];
 
     res = NULL;
-    (void) sandbox_getaddrinfo(name, NULL, &hints, &res);
+    (void) sandbox_seccomp_getaddrinfo(name, NULL, &hints, &res);
     if (res)
-      sandbox_freeaddrinfo(res);
+      sandbox_seccomp_freeaddrinfo(res);
   }
 
   return 0;
 }
 
-void
-sandbox_free_getaddrinfo_cache(void)
+static void
+sandbox_seccomp_free_getaddrinfo_cache(void)
 {
   cached_getaddrinfo_item_t **next, **item, *this;
 
@@ -1816,9 +1820,6 @@ register_cfg(sandbox_cfg_t* cfg)
   return 0;
 }
 
-#endif /* defined(USE_LIBSECCOMP) */
-
-#ifdef USE_LIBSECCOMP
 /**
  * Initialises the syscall sandbox filter for any linux architecture, taking
  * into account various available features for different linux flavours.
@@ -1841,46 +1842,99 @@ initialise_libseccomp_sandbox(sandbox_cfg_t* cfg)
   return 0;
 }
 
-int
-sandbox_is_active(void)
-{
-  return sandbox_active != 0;
-}
-#endif /* defined(USE_LIBSECCOMP) */
-
-sandbox_cfg_t*
-sandbox_cfg_new(void)
+static sandbox_cfg_t *
+sandbox_seccomp_cfg_new(void)
 {
   return NULL;
 }
 
-int
-sandbox_init(sandbox_cfg_t *cfg)
+static int
+sandbox_seccomp_init(sandbox_cfg_t *cfg)
 {
-#if defined(USE_LIBSECCOMP)
   return initialise_libseccomp_sandbox(cfg);
-
-#elif defined(__linux__)
-  (void)cfg;
-  log_warn(LD_GENERAL,
-           "This version of Tor was built without support for sandboxing. To "
-           "build with support for sandboxing on Linux, you must have "
-           "libseccomp and its necessary header files (e.g. seccomp.h).");
-  return 0;
-
-#else
-  (void)cfg;
-  log_warn(LD_GENERAL,
-           "Currently, sandboxing is only implemented on Linux. The feature "
-           "is disabled on your platform.");
-  return 0;
-#endif /* defined(USE_LIBSECCOMP) || ... */
 }
 
-#else
-static void
-sandbox_unused_function(void)
+static int
+sandbox_seccomp_open(const char *path, int flags, mode_t mode,
+  cap_rights_t *rights)
 {
+  return open(path, flags, mode);
 }
-#endif /* !HAVE_SYS_CAPSICUM_H */
+
+static int
+sandbox_seccomp_unlink(const char *path)
+{
+  return unlink(path);
+}
+
+static int
+sandbox_seccomp_socket(int domain, int type, int protocol,
+  cap_rights_t *rights)
+{
+  return socket(domain, type, protocol);
+}
+
+static int
+sandbox_seccomp_connect(int sockfd, const struct sockaddr *name,
+  socklen_t namelen)
+{
+  return connect(sockfd, name, namelen);
+}
+
+static int
+sandbox_seccomp_stat(const char *path, struct stat *sb)
+{
+  return stat(path, sb);
+}
+
+static int
+sandbox_seccomp_rename(const char *from, const char *to)
+{
+  return rename(from, to);
+}
+
+static int
+sandbox_seccomp_close(int fd)
+{
+  return close(fd);
+}
+
+static int
+sandbox_seccomp_mkdir(const char *path, mode_t mode)
+{
+  return mkdir(path, mode);
+}
+
+static sandbox_impl_t sandbox_seccomp_impl = {
+  .sandbox_init = sandbox_seccomp_init,
+  .sandbox_is_active = sandbox_seccomp_is_active,
+  .sandbox_open = sandbox_seccomp_open,
+  .sandbox_mkdir = sandbox_seccomp_mkdir,
+  .sandbox_unlink = sandbox_seccomp_unlink,
+  .sandbox_socket = sandbox_seccomp_socket,
+  .sandbox_add_addrinfo = sandbox_seccomp_add_addrinfo,
+  .sandbox_getaddrinfo = sandbox_seccomp_getaddrinfo,
+  .sandbox_freeaddrinfo = sandbox_seccomp_freeaddrinfo,
+  .sandbox_free_getaddrinfo_cache = sandbox_seccomp_free_getaddrinfo_cache,
+  .sandbox_disable_getaddrinfo_cache = sandbox_seccomp_disable_getaddrinfo_cache,
+  .sandbox_connect = sandbox_seccomp_connect,
+  .sandbox_stat = sandbox_seccomp_stat,
+  .sandbox_rename = sandbox_seccomp_rename,
+  .sandbox_close = sandbox_seccomp_close,
+  .sandbox_cfg_new = sandbox_seccomp_cfg_new,
+  .sandbox_cfg_allow_open_filename = sandbox_seccomp_cfg_allow_open_filename,
+  .sandbox_cfg_allow_openat_filename = sandbox_seccomp_cfg_allow_openat_filename,
+  .sandbox_cfg_allow_stat_filename = sandbox_seccomp_cfg_allow_stat_filename,
+  .sandbox_cfg_allow_chown_filename = sandbox_seccomp_cfg_allow_chown_filename,
+  .sandbox_cfg_allow_chmod_filename = sandbox_seccomp_cfg_allow_chmod_filename,
+  .sandbox_cfg_allow_rename = sandbox_seccomp_cfg_allow_rename,
+  .sandbox_intern_string = sandbox_seccomp_intern_string,
+};
+
+sandbox_impl_t *
+sandbox_seccomp_get_impl(void)
+{
+  return &sandbox_seccomp_impl;
+}
+#endif /* defined(HAVE_SECCOMP_H) */
 

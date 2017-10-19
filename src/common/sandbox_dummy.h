@@ -16,6 +16,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 
+typedef char cap_rights_t;
+
 struct sandbox_impl;
 
 struct sandbox_cfg_elem {

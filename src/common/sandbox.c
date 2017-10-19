@@ -11,8 +11,10 @@ sandbox_get_impl(void)
   if (sandbox != NULL)
     return sandbox;
 
-#ifdef HAVE_SYS_CAPSICUM_H
+#if defined(HAVE_SYS_CAPSICUM_H)
   sandbox = sandbox_freebsd_get_impl();
+#elif defined(HAVE_SECCOMP_H)
+  sandbox = sandbox_seccomp_get_impl();
 #else
   sandbox = sandbox_dummy_get_impl();
 #endif

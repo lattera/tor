@@ -1,8 +1,15 @@
-#include "orconfig.h"
 #include "torint.h"
 
 #ifndef SANDBOX_LINUX_H_
 #define SANDBOX_LINUX_H_
+
+#include <sys/stat.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <fcntl.h>
+
+struct sandbox_impl;
+typedef char cap_rights_t;
 
 #ifndef SYS_SECCOMP
 
@@ -92,91 +99,7 @@ typedef struct {
 
 #endif /* defined(USE_LIBSECCOMP) */
 
-#ifdef USE_LIBSECCOMP
-/** Pre-calls getaddrinfo in order to pre-record result. */
-int sandbox_add_addrinfo(const char *addr);
-
-struct addrinfo;
-/** Replacement for getaddrinfo(), using pre-recorded results. */
-int sandbox_getaddrinfo(const char *name, const char *servname,
-                        const struct addrinfo *hints,
-                        struct addrinfo **res);
-void sandbox_freeaddrinfo(struct addrinfo *addrinfo);
-void sandbox_free_getaddrinfo_cache(void);
-#else /* !(defined(USE_LIBSECCOMP)) */
-#define sandbox_getaddrinfo(name, servname, hints, res)  \
-  getaddrinfo((name),(servname), (hints),(res))
-#define sandbox_add_addrinfo(name) \
-  ((void)(name))
-#define sandbox_freeaddrinfo(addrinfo) \
-  freeaddrinfo((addrinfo))
-#define sandbox_free_getaddrinfo_cache()
-#endif /* defined(USE_LIBSECCOMP) */
-
-#define sandbox_open(path, flags, mode, rights) \
-  open((path), (flags), (mode))
-#define sandbox_mkdir(path, mode) \
-  mkdir((path), (mode))
-#define sandbox_unlink(path) \
-  unlink(path)
-#define sandbox_socket(domain, type, protocol, rights) \
-  socket((domain), (type), (protocol))
-#define sandbox_connect(sockfd, sockaddr, socklen) \
-  connect((sockfd), (sockaddr), (socklen))
-#define sandbox_stat(path, sb) \
-  stat((path), (sb))
-#define sandbox_rename(from, to) \
-  rename((from), (to))
-#define sandbox_close(fd) \
-  close((fd))
-#define fork_backend() do { } while (0);
-#define sandbox_cleanup() do { } while(0);
-
-#ifdef USE_LIBSECCOMP
-/** Returns a registered protected string used with the sandbox, given that
- * it matches the parameter.
- */
-const char* sandbox_intern_string(const char *param);
-#else /* !(defined(USE_LIBSECCOMP)) */
-#define sandbox_intern_string(s) (s)
-#endif /* defined(USE_LIBSECCOMP) */
-
-/** Creates an empty sandbox configuration file.*/
-sandbox_cfg_t * sandbox_cfg_new(void);
-
-/**
- * Function used to add a open allowed filename to a supplied configuration.
- * The (char*) specifies the path to the allowed file; we take ownership
- * of the pointer.
- */
-int sandbox_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file);
-
-int sandbox_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file);
-int sandbox_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file);
-
-/* DOCDOC */
-int sandbox_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2);
-
-/**
- * Function used to add a openat allowed filename to a supplied configuration.
- * The (char*) specifies the path to the allowed file; we steal the pointer to
- * that file.
- */
-int sandbox_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file);
-
-/**
- * Function used to add a stat/stat64 allowed filename to a configuration.
- * The (char*) specifies the path to the allowed file; that pointer is stolen.
- */
-int sandbox_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file);
-
-/** Function used to initialise a sandbox configuration.*/
-int sandbox_init(sandbox_cfg_t* cfg);
-
-/** Return true iff the sandbox is turned on. */
-int sandbox_is_active(void);
-
-void sandbox_disable_getaddrinfo_cache(void);
+struct sandbox_impl *sandbox_seccomp_get_impl(void);
 
 #endif /* !defined(SANDBOX_LINUX_H_) */
 
