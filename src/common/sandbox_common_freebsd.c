@@ -64,7 +64,7 @@ sandbox_freebsd_is_active(void)
 }
 
 static int
-directory_exists(char *path)
+directory_exists(const char *path)
 {
   size_t i;
 
@@ -76,7 +76,7 @@ directory_exists(char *path)
 }
 
 static struct dirfd *
-lookup_directory(char *file)
+lookup_directory(const char *file)
 {
   size_t i;
 
@@ -105,19 +105,6 @@ add_directory_descriptor(int fd, char *path)
   dirfds[ndirs].fd = fd;
   dirfds[ndirs].path = tor_strdup(path);
   ndirs++;
-}
-
-static int
-lookup_directory_descriptor(char *file)
-{
-  struct dirfd *entry;
-
-  entry = lookup_directory(file);
-
-  if (entry != NULL)
-    return entry->fd;
-
-  return -1;
 }
 
 static struct uuids *
@@ -210,6 +197,7 @@ send_request(struct request *request)
   case SHUTDOWN:
     tor_free(wrapper);
     return (NULL);
+  case CREATE_SOCKET:
   default:
     break;
   }
@@ -341,7 +329,6 @@ sandbox_freebsd_unlink(const char *path)
 {
   const char *relpath;
   struct dirfd *dirfd;
-  int fd;
 
   if (!sandbox_freebsd_is_active())
     return unlink(path);
@@ -840,7 +827,6 @@ sandbox_freebsd_init(sandbox_cfg_t *cfg)
 static int
 sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
-  char **p;
   int fd;
   struct stat sb;
 
