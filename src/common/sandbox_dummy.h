@@ -6,8 +6,8 @@
  * \brief Header file for sandbox_common_dummy.c.
  **/
 
-#ifndef SANDBOX_FREEBSD_H_
-#define SANDBOX_FREEBSD_H_
+#ifndef SANDBOX_DUMMY_H_
+#define SANDBOX_DUMMY_H_
 
 #include "orconfig.h"
 

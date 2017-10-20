@@ -18,10 +18,14 @@
 #include "orconfig.h"
 #include "sandbox.h"
 
+sandbox_impl_t *sandbox_dummy_get_impl(void);
+
 static int
 sandbox_dummy_open(const char *path, int flags, mode_t mode,
     cap_rights_t *rights)
 {
+  (void)rights;
+
   return open(path, flags, mode);
 }
 
@@ -35,6 +39,7 @@ static int
 sandbox_dummy_socket(int domain, int type, int protocol,
     cap_rights_t *rights)
 {
+  (void)rights;
   return socket(domain, type, protocol);
 }
 
@@ -96,24 +101,34 @@ sandbox_dummy_close(int fd)
 static int
 sandbox_dummy_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
+  (void)cfg;
+  (void)file;
   return 0;
 }
 
 static int
 sandbox_dummy_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
 {
+  (void)cfg;
+  (void)file;
+
   return 0;
 }
 
 static int
 sandbox_dummy_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
 {
+  (void)cfg;
+  (void)file;
+
   return 0;
 }
 
 static int
 sandbox_dummy_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
 {
+  (void)cfg;
+  (void)file;
 
   return 0;
 }
@@ -121,6 +136,8 @@ sandbox_dummy_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
 static int
 sandbox_dummy_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
 {
+  (void)cfg;
+  (void)file;
 
   return 0;
 }
@@ -128,6 +145,10 @@ sandbox_dummy_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
 static int
 sandbox_dummy_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
 {
+  (void)cfg;
+  (void)file1;
+  (void)file2;
+
   return 0;
 }
 
@@ -146,6 +167,8 @@ sandbox_dummy_intern_string(const char *str)
 static int
 sandbox_dummy_init(sandbox_cfg_t *cfg)
 {
+  (void)cfg;
+
   return 0;
 }
 
