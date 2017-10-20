@@ -76,6 +76,12 @@ sandbox_dummy_chmod(const char *path, mode_t mode)
 }
 
 static int
+sandbox_dummy_chown(const char *path, uid_t owner, gid_t group)
+{
+  return chown(path, owner, group);
+}
+
+static int
 sandbox_dummy_rename(const char *from, const char *to)
 {
   return rename(from, to);
@@ -161,6 +167,7 @@ static sandbox_impl_t sandbox_dummy_impl = {
   .sandbox_connect = sandbox_dummy_connect,
   .sandbox_stat = sandbox_dummy_stat,
   .sandbox_chmod = sandbox_dummy_chmod,
+  .sandbox_chown = sandbox_dummy_chown,
   .sandbox_rename = sandbox_dummy_rename,
   .sandbox_close = sandbox_dummy_close,
   .sandbox_cfg_new = sandbox_dummy_cfg_new,

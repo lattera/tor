@@ -1894,6 +1894,12 @@ sandbox_seccomp_chmod(const char *path, mode_t mode)
 }
 
 static int
+sandbox_seccomp_chown(const char *path, uid_t owner, gid_t group)
+{
+  return chown(path, owner, group);
+}
+
+static int
 sandbox_seccomp_rename(const char *from, const char *to)
 {
   return rename(from, to);
@@ -1926,6 +1932,7 @@ static sandbox_impl_t sandbox_seccomp_impl = {
   .sandbox_connect = sandbox_seccomp_connect,
   .sandbox_stat = sandbox_seccomp_stat,
   .sandbox_chmod = sandbox_seccomp_chmod,
+  .sandbox_chown = sandbox_seccomp_chown,
   .sandbox_rename = sandbox_seccomp_rename,
   .sandbox_close = sandbox_seccomp_close,
   .sandbox_cfg_new = sandbox_seccomp_cfg_new,

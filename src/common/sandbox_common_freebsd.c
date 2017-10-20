@@ -704,6 +704,40 @@ sandbox_freebsd_chmod(const char *path, mode_t mode)
 }
 
 static int
+sandbox_freebsd_chown(const char *path, uid_t owner, gid_t group)
+{
+  const char *relpath;
+  struct dirfd *dirfd;
+
+  if (!sandbox_freebsd_is_active())
+    return chown(path, owner, group);
+
+  /* The path passed in must be the fully-qualified path */
+  if (path[0] != '/') {
+    errno = EPERM;
+    return -1;
+  }
+
+  dirfd = lookup_directory(path);
+  if (dirfd == NULL) {
+    errno = EPERM;
+    return -1;
+  }
+
+  /* The following logic assumes that strlen(path) >
+   * strlen(dirfd->path) + 1. */
+  if (strlen(path) < strlen(dirfd->path) + 1) {
+    errno = EPERM;
+    return -1;
+  }
+
+  relpath = path;
+  relpath += strlen(dirfd->path) + 1;
+
+  return fchownat(dirfd->fd, path, owner, group, 0);
+}
+
+static int
 sandbox_freebsd_rename(const char *from, const char *to)
 {
   struct dirfd *fromfd, *tofd;
@@ -911,6 +945,7 @@ static sandbox_impl_t sandbox_freebsd_impl = {
   .sandbox_connect = sandbox_freebsd_connect,
   .sandbox_stat = sandbox_freebsd_stat,
   .sandbox_chmod = sandbox_freebsd_chmod,
+  .sandbox_chown = sandbox_freebsd_chown,
   .sandbox_rename = sandbox_freebsd_rename,
   .sandbox_close = sandbox_freebsd_close,
   .sandbox_cfg_allow_open_filename = sandbox_freebsd_cfg_allow_open_filename,

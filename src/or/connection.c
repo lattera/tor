@@ -1323,7 +1323,7 @@ connection_listener_new(const struct sockaddr *listensockaddr,
       } else if (fstat(s, &st) == 0 &&
                  st.st_uid == pw->pw_uid && st.st_gid == pw->pw_gid) {
         /* No change needed */
-      } else if (chown(sandbox->sandbox_intern_string(address),
+      } else if (sandbox->sandbox_chown(sandbox->sandbox_intern_string(address),
                        pw->pw_uid, pw->pw_gid) < 0) {
         log_warn(LD_NET,"Unable to chown() %s socket: %s.",
                  address, strerror(errno));

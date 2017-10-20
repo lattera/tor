@@ -2,6 +2,7 @@
 #define SANDBOX_H_
 
 #include "orconfig.h"
+#include <unistd.h>
 
 #if defined(HAVE_SYS_CAPSICUM_H)
 #include <sys/capsicum.h>
@@ -27,6 +28,7 @@ typedef struct sandbox_impl {
   int (*sandbox_connect)(int, const struct sockaddr *, socklen_t);
   int (*sandbox_stat)(const char *, struct stat *);
   int (*sandbox_chmod)(const char *, mode_t);
+  int (*sandbox_chown)(const char *, uid_t, gid_t);
   int (*sandbox_rename)(const char *, const char *);
   int (*sandbox_close)(int);
   const char *(*sandbox_intern_string)(const char *);
