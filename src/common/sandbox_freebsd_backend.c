@@ -38,7 +38,7 @@
 #include "orconfig.h"
 #include "util.h"
 
-#if HAVE_SYS_CAPSICUM_H
+#ifdef HAVE_SYS_CAPSICUM_H
 
 #include <sys/capsicum.h>
 #include <sys/procdesc.h>
@@ -506,5 +506,5 @@ do_shutdown(int fd, struct request *request)
   close(fd);
   _exit(0);
 }
-#endif /* HAVE_SYS_CAPSICUM_H */
+#endif /* defined(HAVE_SYS_CAPSICUM_H) */
 

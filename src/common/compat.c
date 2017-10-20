@@ -283,12 +283,12 @@ tor_mmap_file(const char *filename)
   tor_mmap_t *res;
   size_t size, filesize;
   struct stat st;
-#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_t rights;
 
+#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_init(&rights, CAP_MMAP, CAP_MMAP_R);
 #else
-  char rights;
+  rights = 0;
 #endif
 
   tor_assert(filename);
@@ -975,12 +975,12 @@ tor_lockfile_lock(const char *filename, int blocking, int *locked_out)
 {
   tor_lockfile_t *result;
   int fd;
-#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_t rights;
 
+#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_init(&rights, CAP_FLOCK);
 #else
-  char rights;
+  rights = 0;
 #endif
 
   *locked_out = 0;

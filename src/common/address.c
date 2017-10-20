@@ -1562,12 +1562,11 @@ get_interface_addresses_ioctl(int severity, sa_family_t family)
   ifc.ifc_buf = NULL;
   int fd;
   smartlist_t *result = NULL;
-#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_t rights;
 
+#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_init(&rights, CAP_IOCTL);
 #else
-  char rights;
   rights = 0;
 #endif
 

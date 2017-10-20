@@ -2521,11 +2521,7 @@ start_writing_to_file(const char *fname, int open_flags, int mode,
   open_file_t *new_file = tor_malloc_zero(sizeof(open_file_t));
   const char *open_name;
   int append = 0;
-#ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_t rights;
-#else
-  char rights;
-#endif
 
   tor_assert(fname);
   tor_assert(data_out);
@@ -2555,7 +2551,10 @@ start_writing_to_file(const char *fname, int open_flags, int mode,
 #ifdef HAVE_SYS_CAPSICUM_H
   cap_rights_init(&rights, CAP_CREATE, CAP_READ, CAP_WRITE, CAP_SEEK,
       CAP_FCNTL);
+#else
+  rights = 0;
 #endif
+
   new_file->fd = tor_open_cloexec(open_name, open_flags, mode, &rights);
   if (new_file->fd < 0) {
     log_warn(LD_FS, "Couldn't open \"%s\" (%s) for writing: %s",

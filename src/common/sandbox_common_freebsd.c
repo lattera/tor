@@ -25,7 +25,7 @@
 
 #include <fcntl.h>
 
-#if HAVE_SYS_CAPSICUM_H
+#ifdef HAVE_SYS_CAPSICUM_H
 
 #include <sys/procdesc.h>
 
@@ -949,5 +949,5 @@ sandbox_freebsd_get_impl(void)
   return &sandbox_freebsd_impl;
 }
 
-#endif /* HAVE_SYS_CAPSICUM_H */
+#endif /* defined(HAVE_SYS_CAPSICUM_H) */
 

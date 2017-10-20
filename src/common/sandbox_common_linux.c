@@ -1858,6 +1858,8 @@ static int
 sandbox_seccomp_open(const char *path, int flags, mode_t mode,
   cap_rights_t *rights)
 {
+  (void)rights;
+
   return open(path, flags, mode);
 }
 
@@ -1871,6 +1873,8 @@ static int
 sandbox_seccomp_socket(int domain, int type, int protocol,
   cap_rights_t *rights)
 {
+  (void)rights;
+
   return socket(domain, type, protocol);
 }
 
