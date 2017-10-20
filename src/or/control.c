@@ -74,6 +74,7 @@
 #include "router.h"
 #include "routerlist.h"
 #include "routerparse.h"
+#include "sandbox.h"
 #include "shared_random.h"
 
 #ifndef _WIN32
@@ -605,7 +606,7 @@ control_ports_write_to_file(void)
   }
 #ifndef _WIN32
   if (options->ControlPortFileGroupReadable) {
-    if (chmod(options->ControlPortWriteToFile, 0640)) {
+    if (sandbox->sandbox_chmod(options->ControlPortWriteToFile, 0640)) {
       log_warn(LD_FS,"Unable to make %s group-readable.",
                options->ControlPortWriteToFile);
     }

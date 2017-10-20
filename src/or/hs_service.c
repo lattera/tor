@@ -24,6 +24,7 @@
 #include "router.h"
 #include "routerkeys.h"
 #include "routerlist.h"
+#include "sandbox.h"
 #include "shared_random_state.h"
 #include "statefile.h"
 
@@ -936,7 +937,7 @@ write_address_to_file(const hs_service_t *service, const char *fname_)
 #ifndef _WIN32
   if (service->config.dir_group_readable) {
     /* Mode to 0640. */
-    if (chmod(fname, S_IRUSR | S_IWUSR | S_IRGRP) < 0) {
+    if (sandbox->sandbox_chmod(fname, S_IRUSR | S_IWUSR | S_IRGRP) < 0) {
       log_warn(LD_FS, "Unable to make onion service hostname file %s "
                       "group-readable.", escaped(fname));
     }

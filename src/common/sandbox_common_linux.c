@@ -1888,6 +1888,12 @@ sandbox_seccomp_stat(const char *path, struct stat *sb)
 }
 
 static int
+sandbox_seccomp_chmod(const char *path, mode_t mode)
+{
+  return chmod(path, mode);
+}
+
+static int
 sandbox_seccomp_rename(const char *from, const char *to)
 {
   return rename(from, to);
@@ -1919,6 +1925,7 @@ static sandbox_impl_t sandbox_seccomp_impl = {
   .sandbox_disable_getaddrinfo_cache = sandbox_seccomp_disable_getaddrinfo_cache,
   .sandbox_connect = sandbox_seccomp_connect,
   .sandbox_stat = sandbox_seccomp_stat,
+  .sandbox_chmod = sandbox_seccomp_chmod,
   .sandbox_rename = sandbox_seccomp_rename,
   .sandbox_close = sandbox_seccomp_close,
   .sandbox_cfg_new = sandbox_seccomp_cfg_new,

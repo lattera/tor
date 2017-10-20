@@ -99,6 +99,7 @@
 #include "routerlist.h"
 #include "routerset.h"
 #include "scheduler.h"
+#include "sandbox.h"
 #include "statefile.h"
 #include "transports.h"
 #include "ext_orport.h"
@@ -1394,7 +1395,7 @@ options_act_reversible(const or_options_t *old_options, char **msg)
 #ifndef _WIN32
   if (options->DataDirectoryGroupReadable) {
     /* Only new dirs created get new opts, also enforce group read. */
-    if (chmod(options->DataDirectory, 0750)) {
+    if (sandbox->sandbox_chmod(options->DataDirectory, 0750)) {
       log_warn(LD_FS,"Unable to make %s group-readable: %s",
                options->DataDirectory, strerror(errno));
     }
@@ -8165,7 +8166,7 @@ init_cookie_authentication(const char *fname, const char *header,
 
 #ifndef _WIN32
   if (group_readable) {
-    if (chmod(fname, 0640)) {
+    if (sandbox->sandbox_chmod(fname, 0640)) {
       log_warn(LD_FS,"Unable to make %s group-readable.", escaped(fname));
     }
   }

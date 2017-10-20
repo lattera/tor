@@ -1350,7 +1350,7 @@ connection_listener_new(const struct sockaddr *listensockaddr,
        * platforms. */
       if (fstat(s, &st) == 0 && (st.st_mode & 0777) == mode) {
         /* no change needed */
-      } else if (chmod(sandbox->sandbox_intern_string(address), mode) < 0) {
+      } else if (sandbox->sandbox_chmod(sandbox->sandbox_intern_string(address), mode) < 0) {
         log_warn(LD_FS,"Unable to make %s %s.", address, status);
         goto err;
       }
