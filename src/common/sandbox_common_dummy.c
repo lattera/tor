@@ -16,6 +16,7 @@
 #include <errno.h>
 
 #include "orconfig.h"
+#include "torlog.h"
 #include "sandbox.h"
 
 sandbox_impl_t *sandbox_dummy_get_impl(void);
@@ -168,6 +169,10 @@ static int
 sandbox_dummy_init(sandbox_cfg_t *cfg)
 {
   (void)cfg;
+
+  log_warn(LD_GENERAL,
+      "Currently, sandboxing is only implemented on Linux and FreeBSD"
+      ". The feature is disabled on your platform.");
 
   return 0;
 }
