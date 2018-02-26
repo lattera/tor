@@ -157,7 +157,7 @@ rend_num_services(void)
 
 /** Helper: free storage held by a single service authorized client entry. */
 void
-rend_authorized_client_free(rend_authorized_client_t *client)
+rend_authorized_client_free_(rend_authorized_client_t *client)
 {
   if (!client)
     return;
@@ -172,15 +172,15 @@ rend_authorized_client_free(rend_authorized_client_t *client)
 
 /** Helper for strmap_free. */
 static void
-rend_authorized_client_strmap_item_free(void *authorized_client)
+rend_authorized_client_free_void(void *authorized_client)
 {
-  rend_authorized_client_free(authorized_client);
+  rend_authorized_client_free_(authorized_client);
 }
 
 /** Release the storage held by <b>service</b>.
  */
 STATIC void
-rend_service_free(rend_service_t *service)
+rend_service_free_(rend_service_t *service)
 {
   if (!service)
     return;
@@ -470,9 +470,33 @@ rend_service_parse_port_config(const char *string, const char *sep,
 
 /** Release all storage held in a rend_service_port_config_t. */
 void
-rend_service_port_config_free(rend_service_port_config_t *p)
+rend_service_port_config_free_(rend_service_port_config_t *p)
 {
   tor_free(p);
+}
+
+/* Copy relevant data from service src to dst while pruning the service lists.
+ * This should only be called during the pruning process which takes existing
+ * services and copy their data to the newly configured services. The src
+ * service replaycache will be set to NULL after this call. */
+static void
+copy_service_on_prunning(rend_service_t *dst, rend_service_t *src)
+{
+  tor_assert(dst);
+  tor_assert(src);
+
+  /* Keep the timestamps for when the content changed and the next upload
+   * time so we can properly upload the descriptor if needed for the new
+   * service object. */
+  dst->desc_is_dirty = src->desc_is_dirty;
+  dst->next_upload_time = src->next_upload_time;
+  /* Move the replaycache to the new object. */
+  dst->accepted_intro_dh_parts = src->accepted_intro_dh_parts;
+  src->accepted_intro_dh_parts = NULL;
+  /* Copy intro point information to destination service. */
+  dst->intro_period_started = src->intro_period_started;
+  dst->n_intro_circuits_launched = src->n_intro_circuits_launched;
+  dst->n_intro_points_wanted = src->n_intro_points_wanted;
 }
 
 /* Helper: Actual implementation of the pruning on reload which we've
@@ -548,6 +572,10 @@ rend_service_prune_list_impl_(void)
       smartlist_clear(old->intro_nodes);
       smartlist_add_all(new->expiring_nodes, old->expiring_nodes);
       smartlist_clear(old->expiring_nodes);
+
+      /* Copy needed information from old to new. */
+      copy_service_on_prunning(new, old);
+
       /* This regular service will survive the closing IPs step after. */
       smartlist_add(surviving_services, old);
       break;
@@ -819,9 +847,9 @@ rend_config_service(const config_line_t *line_,
  * after calling this routine, and may assume that correct cleanup has
  * been done on failure.
  *
- * Return an appropriate rend_service_add_ephemeral_status_t.
+ * Return an appropriate hs_service_add_ephemeral_status_t.
  */
-rend_service_add_ephemeral_status_t
+hs_service_add_ephemeral_status_t
 rend_service_add_ephemeral(crypto_pk_t *pk,
                            smartlist_t *ports,
                            int max_streams_per_circuit,
@@ -1332,7 +1360,7 @@ rend_services_add_filenames_to_lists(smartlist_t *open_lst,
 }
 
 /** Derive all rend_service_t internal material based on the service's key.
- * Returns 0 on sucess, -1 on failure.
+ * Returns 0 on success, -1 on failure.
  */
 static int
 rend_service_derive_key_digests(struct rend_service_t *s)
@@ -1647,7 +1675,7 @@ rend_service_load_auth_keys(rend_service_t *s, const char *hfname)
     memwipe(client_keys_str, 0, strlen(client_keys_str));
     tor_free(client_keys_str);
   }
-  strmap_free(parsed_clients, rend_authorized_client_strmap_item_free);
+  strmap_free(parsed_clients, rend_authorized_client_free_void);
 
   if (cfname) {
     memwipe(cfname, 0, strlen(cfname));
@@ -1801,6 +1829,7 @@ rend_service_receive_introduction(origin_circuit_t *circuit,
   time_t now = time(NULL);
   time_t elapsed;
   int replay;
+  ssize_t keylen;
 
   /* Do some initial validation and logging before we parse the cell */
   if (circuit->base_.purpose != CIRCUIT_PURPOSE_S_INTRO) {
@@ -1875,9 +1904,10 @@ rend_service_receive_introduction(origin_circuit_t *circuit,
   }
 
   /* check for replay of PK-encrypted portion. */
+  keylen = crypto_pk_keysize(intro_key);
   replay = replaycache_add_test_and_elapsed(
     intro_point->accepted_intro_rsa_parts,
-    parsed_req->ciphertext, parsed_req->ciphertext_len,
+    parsed_req->ciphertext, MIN(parsed_req->ciphertext_len, keylen),
     &elapsed);
 
   if (replay) {
@@ -2012,7 +2042,8 @@ rend_service_receive_introduction(origin_circuit_t *circuit,
 
   /* Launch a circuit to the client's chosen rendezvous point.
    */
-  for (i=0;i<MAX_REND_FAILURES;i++) {
+  int max_rend_failures=hs_get_service_max_rend_failures();
+  for (i=0;i<max_rend_failures;i++) {
     int flags = CIRCLAUNCH_NEED_CAPACITY | CIRCLAUNCH_IS_INTERNAL;
     if (circ_needs_uptime) flags |= CIRCLAUNCH_NEED_UPTIME;
     /* A Single Onion Service only uses a direct connection if its
@@ -2193,7 +2224,7 @@ find_rp_for_intro(const rend_intro_cell_t *intro,
  * rend_service_parse_intro().
  */
 void
-rend_service_free_intro(rend_intro_cell_t *request)
+rend_service_free_intro_(rend_intro_cell_t *request)
 {
   if (!request) {
     return;
@@ -2908,7 +2939,6 @@ rend_service_relaunch_rendezvous(origin_circuit_t *oldcirc)
   cpath_build_state_t *newstate, *oldstate;
 
   tor_assert(oldcirc->base_.purpose == CIRCUIT_PURPOSE_S_CONNECT_REND);
-
   oldstate = oldcirc->build_state;
   tor_assert(oldstate);
 
@@ -3166,7 +3196,7 @@ rend_service_intro_has_opened(origin_circuit_t *circuit)
 
   /* If we already have enough introduction circuits for this service,
    * redefine this one as a general circuit or close it, depending.
-   * Substract the amount of expiring nodes here because the circuits are
+   * Subtract the amount of expiring nodes here because the circuits are
    * still opened. */
   if (valid_ip_circuits > service->n_intro_points_wanted) {
     const or_options_t *options = get_options();
@@ -3192,7 +3222,12 @@ rend_service_intro_has_opened(origin_circuit_t *circuit)
                "circuit, but we already have enough. Redefining purpose to "
                "general; leaving as internal.");
 
-      circuit_change_purpose(TO_CIRCUIT(circuit), CIRCUIT_PURPOSE_C_GENERAL);
+      if (circuit_should_use_vanguards(TO_CIRCUIT(circuit)->purpose)) {
+        circuit_change_purpose(TO_CIRCUIT(circuit),
+                CIRCUIT_PURPOSE_HS_VANGUARDS);
+      } else {
+        circuit_change_purpose(TO_CIRCUIT(circuit), CIRCUIT_PURPOSE_C_GENERAL);
+      }
 
       {
         rend_data_free(circuit->rend_data);
@@ -3546,7 +3581,7 @@ directory_post_to_hs_dir(rend_service_descriptor_t *renddesc,
                           "directories to post descriptors to.");
         control_event_hs_descriptor_upload(service_id,
                                            "UNKNOWN",
-                                           "UNKNOWN");
+                                           "UNKNOWN", NULL);
         goto done;
       }
     }
@@ -3601,7 +3636,7 @@ directory_post_to_hs_dir(rend_service_descriptor_t *renddesc,
                hs_dir->or_port);
       control_event_hs_descriptor_upload(service_id,
                                          hs_dir->identity_digest,
-                                         desc_id_base32);
+                                         desc_id_base32, NULL);
       tor_free(hs_dir_ip);
       /* Remember successful upload to this router for next time. */
       if (!smartlist_contains_digest(successful_uploads,
@@ -3698,7 +3733,7 @@ upload_service_descriptor(rend_service_t *service)
       }
       /* Free memory for descriptors. */
       for (i = 0; i < smartlist_len(descs); i++)
-        rend_encoded_v2_service_descriptor_free(smartlist_get(descs, i));
+        rend_encoded_v2_service_descriptor_free_(smartlist_get(descs, i));
       smartlist_clear(descs);
       /* Update next upload time. */
       if (seconds_valid - REND_TIME_PERIOD_OVERLAPPING_V2_DESCS
@@ -3729,7 +3764,7 @@ upload_service_descriptor(rend_service_t *service)
         }
         /* Free memory for descriptors. */
         for (i = 0; i < smartlist_len(descs); i++)
-          rend_encoded_v2_service_descriptor_free(smartlist_get(descs, i));
+          rend_encoded_v2_service_descriptor_free_(smartlist_get(descs, i));
         smartlist_clear(descs);
       }
     }
@@ -3884,6 +3919,10 @@ remove_invalid_intro_points(rend_service_t *service,
       log_info(LD_REND, "Expiring %s as intro point for %s.",
                safe_str_client(extend_info_describe(intro->extend_info)),
                safe_str_client(service->service_id));
+      /* We might have put it in the retry list if so, undo. */
+      if (retry_nodes) {
+        smartlist_remove(retry_nodes, intro);
+      }
       smartlist_add(service->expiring_nodes, intro);
       SMARTLIST_DEL_CURRENT(service->intro_nodes, intro);
       /* Intro point is expired, we need a new one thus don't consider it
@@ -4082,7 +4121,7 @@ rend_consider_services_intro_points(time_t now)
                  n_intro_points_to_open);
         break;
       }
-      /* Add the choosen node to the exclusion list in order to avoid picking
+      /* Add the chosen node to the exclusion list in order to avoid picking
        * it again in the next iteration. */
       smartlist_add(exclude_nodes, (void*)node);
       intro = tor_malloc_zero(sizeof(rend_intro_point_t));
@@ -4247,7 +4286,7 @@ rend_service_dump_stats(int severity)
 }
 
 /** Given <b>conn</b>, a rendezvous exit stream, look up the hidden service for
- * 'circ', and look up the port and address based on conn-\>port.
+ * <b>circ</b>, and look up the port and address based on conn-\>port.
  * Assign the actual conn-\>addr and conn-\>port. Return -2 on failure
  * for which the circuit should be closed, -1 on other failure,
  * or 0 for success.

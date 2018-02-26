@@ -18,6 +18,7 @@
 
 #include <openssl/opensslv.h>
 #include "crypto.h"
+#include "crypto_openssl_mgt.h"
 
 #if OPENSSL_VERSION_NUMBER < OPENSSL_V_SERIES(1,0,0)
 #error "We require OpenSSL >= 1.0.0"
@@ -110,7 +111,7 @@ aes_new_cipher(const uint8_t *key, const uint8_t *iv, int key_bits)
   return (aes_cnt_cipher_t *) cipher;
 }
 void
-aes_cipher_free(aes_cnt_cipher_t *cipher_)
+aes_cipher_free_(aes_cnt_cipher_t *cipher_)
 {
   if (!cipher_)
     return;
@@ -324,7 +325,7 @@ aes_set_key(aes_cnt_cipher_t *cipher, const uint8_t *key, int key_bits)
 /** Release storage held by <b>cipher</b>
  */
 void
-aes_cipher_free(aes_cnt_cipher_t *cipher)
+aes_cipher_free_(aes_cnt_cipher_t *cipher)
 {
   if (!cipher)
     return;

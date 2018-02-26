@@ -231,12 +231,15 @@ GENERAL OPTIONS
     usage for \_relayed traffic_ on this node to the specified number of bytes
     per second, and the average outgoing bandwidth usage to that same value.
     Relayed traffic currently is calculated to include answers to directory
-    requests, but that may change in future versions. (Default: 0)
+    requests, but that may change in future versions. They do not include directory
+    fetches by the relay (from authority or other relays), because that is considered
+    "client" activity.  (Default: 0)
 
 [[RelayBandwidthBurst]] **RelayBandwidthBurst** __N__ **bytes**|**KBytes**|**MBytes**|**GBytes**|**TBytes**|**KBits**|**MBits**|**GBits**|**TBits**::
     If not 0, limit the maximum token bucket size (also known as the burst) for
     \_relayed traffic_ to the given number of bytes in each direction.
-    (Default: 0)
+    They do not include directory fetches by the relay (from authority
+    or other relays), because that is considered "client" activity. (Default: 0)
 
 [[PerConnBWRate]] **PerConnBWRate** __N__ **bytes**|**KBytes**|**MBytes**|**GBytes**|**TBytes**|**KBits**|**MBits**|**GBits**|**TBits**::
     If set, do separate rate limiting for each connection from a non-relay.
@@ -415,6 +418,16 @@ GENERAL OPTIONS
     DataDirectory. If the option is set to 1, make the DataDirectory readable
     by the default GID. (Default: 0)
 
+[[CacheDirectory]] **CacheDirectory** __DIR__::
+    Store cached directory data in DIR. Can not be changed while tor is
+    running.
+    (Default: uses the value of DataDirectory.)
+
+[[CacheDirectoryGroupReadable]] **CacheDirectoryGroupReadable** **0**|**1**::
+    If this option is set to 0, don't allow the filesystem group to read the
+    CacheDirectory. If the option is set to 1, make the CacheDirectory readable
+    by the default GID. (Default: 0)
+
 [[FallbackDir]] **FallbackDir** __ipv4address__:__port__ orport=__port__ id=__fingerprint__ [weight=__num__] [ipv6=**[**__ipv6address__**]**:__orport__]::
     When we're unable to connect to any directory cache for directory info
     (usually because we don't know about any yet) we try a directory authority.
@@ -466,7 +479,8 @@ GENERAL OPTIONS
     When configured to use both directory authorities and fallback
     directories, the directory authorities also work as fallbacks. They are
     chosen with their regular weights, multiplied by this number, which
-    should be 1.0 or less. (Default: 1.0)
+    should be 1.0 or less. The default is less than 1, to reduce load on
+    authorities. (Default: 0.1)
 
 [[AlternateDirAuthority]] **AlternateDirAuthority** [__nickname__] [**flags**] __ipv4address__:__port__ __fingerprint__ +
 
@@ -594,10 +608,10 @@ GENERAL OPTIONS
     in accordance to RFC 1929. Both username and password must be between 1 and
     255 characters.
 
-[[SocksSocketsGroupWritable]] **SocksSocketsGroupWritable** **0**|**1**::
+[[UnixSocksGroupWritable]] **UnixSocksGroupWritable** **0**|**1**::
     If this option is set to 0, don't allow the filesystem group to read and
-    write unix sockets (e.g. SocksSocket). If the option is set to 1, make
-    the SocksSocket socket readable and writable by the default GID. (Default: 0)
+    write unix sockets (e.g. SocksPort unix:). If the option is set to 1, make
+    the Unix socket readable and writable by the default GID. (Default: 0)
 
 [[KeepalivePeriod]] **KeepalivePeriod** __NUM__::
     To keep firewalls from expiring connections, send a padding keepalive cell
@@ -662,7 +676,7 @@ GENERAL OPTIONS
     be used twice, once with an IPv4 address and once with an IPv6 address.
     IPv6 addresses should be wrapped in square brackets.
     This setting will be ignored for connections to the loopback addresses
-    (127.0.0.0/8 and ::1).
+    (127.0.0.0/8 and ::1), and is not used for DNS requests as well.
 
 [[OutboundBindAddressOR]] **OutboundBindAddressOR** __IP__::
     Make all outbound non-exit (relay and other) connections
@@ -713,6 +727,11 @@ GENERAL OPTIONS
     When logging to syslog, adds a tag to the syslog identity such that
     log entries are marked with "Tor-__tag__". Can not be changed while tor is
     running. (Default: none)
+
+[[AndroidIdentityTag]] **AndroidIdentityTag** __tag__::
+    When logging to Android's logging subsystem, adds a tag to the log identity
+    such that log entries are marked with "Tor-__tag__". Can not be changed while
+    tor is running. (Default: none)
 
 [[SafeLogging]] **SafeLogging** **0**|**1**|**relay**::
     Tor can scrub potentially sensitive strings from log messages (e.g.
@@ -791,27 +810,35 @@ GENERAL OPTIONS
     restarting Tor. (Default: 0)
 
 [[Schedulers]] **Schedulers** **KIST**|**KISTLite**|**Vanilla**::
-    Specify the scheduler type that tor should use to handle outbound data on
-    channels. This is an ordered list by priority which means that the first
-    value will be tried first and if unavailable, the second one is tried and
-    so on. It is possible to change thse values at runtime.
+    Specify the scheduler type that tor should use. The scheduler is
+    responsible for moving data around within a Tor process. This is an ordered
+    list by priority which means that the first value will be tried first and if
+    unavailable, the second one is tried and so on. It is possible to change
+    these values at runtime. This option mostly effects relays, and most
+    operators should leave it set to its default value.
     (Default: KIST,KISTLite,Vanilla)
  +
     The possible scheduler types are:
  +
-    **KIST**: Kernel Informed Socket Transport. Tor will use the kernel tcp
-    information stack per-socket to make an informed decision on if it should
-    send or not the data. (Only available on Linux)
+    **KIST**: Kernel-Informed Socket Transport. Tor will use TCP information
+    from the kernel to make informed decisions regarding how much data to send
+    and when to send it. KIST also handles traffic in batches (see
+    KISTSchedRunInterval) in order to improve traffic prioritization decisions.
+    As implemented, KIST will only work on Linux kernel version 2.6.39 or
+    higher.
  +
-    **KISTLite**: Same as KIST but without kernel support which means that tor
-    will use all the same mecanics as KIST but without the TCP information the
-    kernel can provide.
+    **KISTLite**: Same as KIST but without kernel support. Tor will use all
+    the same mechanics as with KIST, including the batching, but its decisions
+    regarding how much data to send will not be as good. KISTLite will work on
+    all kernels and operating systems, and the majority of the benefits of KIST
+    are still realized with KISTLite.
  +
-    **Vanilla**: The scheduler that tor has always used that is do as much as
-    possible or AMAP.
+    **Vanilla**: The scheduler that Tor used before KIST was implemented. It
+    sends as much data as possible, as soon as possible. Vanilla will work on
+    all kernels and operating systems.
 
 [[KISTSchedRunInterval]] **KISTSchedRunInterval** __NUM__ **msec**::
-    If KIST or KISTLite is used in Schedulers option, this control at which
+    If KIST or KISTLite is used in the Schedulers option, this controls at which
     interval the scheduler tick is. If the value is 0 msec, the value is taken
     from the consensus if possible else it will fallback to the default 10
     msec. Maximum possible value is 100 msec. (Default: 0 msec)
@@ -1215,8 +1242,8 @@ The following options are useful only for clients (that is, if
         nodes via this connection.
     **UseIPv4Cache**;;
         Tells the client to use any cached IPv4 DNS answers we have when making
-        requests via this connection. (NOTE: This option, along UseIPv6Cache
-        and UseDNSCache, can harm your anonymity, and probably
+        requests via this connection. (NOTE: This option, or UseIPv6Cache
+        or UseDNSCache, can harm your anonymity, and probably
         won't help performance as much as you might expect. Use with care!)
     **UseIPv6Cache**;;
         Tells the client to use any cached IPv6 DNS answers we have when making
@@ -1440,9 +1467,15 @@ The following options are useful only for clients (that is, if
     addresses/ports. See SocksPort for an explanation of isolation
     flags. (Default: 0)
 
+[[ClientDNSRejectInternalAddresses]] **ClientDNSRejectInternalAddresses** **0**|**1**::
+    If true, Tor does not believe any anonymously retrieved DNS answer that
+    tells it that an address resolves to an internal address (like 127.0.0.1 or
+    192.168.0.1). This option prevents certain browser-based attacks; it
+    is not allowed to be set on the default network. (Default: 1)
+
 [[ClientRejectInternalAddresses]] **ClientRejectInternalAddresses** **0**|**1**::
     If true, Tor does not try to fulfill requests to connect to an internal
-    address (like 127.0.0.1 or 192.168.0.1) __unless a exit node is
+    address (like 127.0.0.1 or 192.168.0.1) __unless an exit node is
     specifically requested__ (for example, via a .exit hostname, or a
     controller request).  If true, multicast DNS hostnames for machines on the
     local network (of the form *.local) are also rejected.  (Default: 1)
@@ -1497,6 +1530,100 @@ The following options are useful only for clients (that is, if
  +
     If no nodes in Tor2webRendezvousPoints are currently available for
     use, Tor will choose a random node when building HS circuits.
+
+[[_HSLayer2Nodes]] **_HSLayer2Nodes** __node__,__node__,__...__::
+    A list of identity fingerprints, nicknames, country codes, and
+    address patterns of nodes that are allowed to be used as the
+    second hop in all client or service-side Onion Service circuits.
+    This option mitigates attacks where the adversary runs middle nodes
+    and induces your client or service to create many circuits, in order
+    to discover your primary guard node.
+    (Default: Any node in the network may be used in the second hop.)
+ +
+    (Example:
+    _HSLayer2Nodes ABCD1234CDEF5678ABCD1234CDEF5678ABCD1234, \{cc}, 255.254.0.0/8) +
+ +
+    When this is set, the resulting hidden service paths will
+    look like:
+ +
+        C - G - L2 - M - Rend +
+        C - G - L2 - M - HSDir +
+        C - G - L2 - M - Intro +
+        S - G - L2 - M - Rend +
+        S - G - L2 - M - HSDir +
+        S - G - L2 - M - Intro +
+ +
+    where C is this client, S is the service, G is the Guard node,
+    L2 is a node from this option, and M is a random middle node.
+    Rend, HSDir, and Intro point selection is not affected by this
+    option.
+ +
+    This option may be combined with _HSLayer3Nodes to create
+    paths of the form:
+ +
+        C - G - L2 - L3 - Rend +
+        C - G - L2 - L3 - M - HSDir +
+        C - G - L2 - L3 - M - Intro +
+        S - G - L2 - L3 - M - Rend +
+        S - G - L2 - L3 - HSDir +
+        S - G - L2 - L3 - Intro +
+ +
+    ExcludeNodes have higher priority than _HSLayer2Nodes,
+    which means that nodes specified in ExcludeNodes will not be
+    picked.
+ +
+    This option is meant to be managed by a Tor controller such as
+    https://github.com/mikeperry-tor/vanguards that selects and
+    updates this set of nodes for you. Hence it does not do load
+    balancing if fewer than 20 nodes are selected, and if no nodes in
+    _HSLayer2Nodes are currently available for use, Tor will not work.
+    Please use extreme care if you are setting this option manually.
+
+[[_HSLayer3Nodes]] **_HSLayer3Nodes** __node__,__node__,__...__::
+    A list of identity fingerprints, nicknames, country codes, and
+    address patterns of nodes that are allowed to be used as the
+    third hop in all client and service-side Onion Service circuits.
+    This option mitigates attacks where the adversary runs middle nodes
+    and induces your client or service to create many circuits, in order
+    to discover your primary or Layer2 guard nodes.
+    (Default: Any node in the network may be used in the third hop.)
+ +
+    (Example:
+    _HSLayer3Nodes ABCD1234CDEF5678ABCD1234CDEF5678ABCD1234, \{cc}, 255.254.0.0/8) +
+ +
+    When this is set by itself, the resulting hidden service paths
+    will look like: +
+        C - G - M - L3 - Rend +
+        C - G - M - L3 - M - HSDir +
+        C - G - M - L3 - M - Intro +
+        S - G - M - L3 - M - Rend +
+        S - G - M - L3 - HSDir +
+        S - G - M - L3 - Intro +
+    where C is this client, S is the service, G is the Guard node,
+    L2 is a node from this option, and M is a random middle node.
+    Rend, HSDir, and Intro point selection is not affected by this
+    option.
+ +
+    While it is possible to use this option by itself, it should be
+    combined with _HSLayer2Nodes to create paths of the form:
+ +
+        C - G - L2 - L3 - Rend +
+        C - G - L2 - L3 - M - HSDir +
+        C - G - L2 - L3 - M - Intro +
+        S - G - L2 - L3 - M - Rend +
+        S - G - L2 - L3 - HSDir +
+        S - G - L2 - L3 - Intro +
+ +
+    ExcludeNodes have higher priority than _HSLayer3Nodes,
+    which means that nodes specified in ExcludeNodes will not be
+    picked.
+  +
+    This option is meant to be managed by a Tor controller such as
+    https://github.com/mikeperry-tor/vanguards that selects and
+    updates this set of nodes for you. Hence it does not do load
+    balancing if fewer than 20 nodes are selected, and if no nodes in
+    _HSLayer3Nodes are currently available for use, Tor will not work.
+    Please use extreme care if you are setting this option manually.
 
 [[UseMicrodescriptors]] **UseMicrodescriptors** **0**|**1**|**auto**::
     Microdescriptors are a smaller version of the information that Tor needs
@@ -1670,6 +1797,17 @@ is non-zero):
     server descriptor to the bridge database, rather than
     to the public directory authorities.
 
+[[BridgeDistribution]] **BridgeDistribution** __string__::
+    If set along with BridgeRelay, Tor will include a new line in its
+    bridge descriptor which indicates to the BridgeDB service how it
+    would like its bridge address to be given out. Set it to "none" if
+    you want BridgeDB to avoid distributing your bridge address, or "any" to
+    let BridgeDB decide. (Default: any)
+ +
+    Note: as of Oct 2017, the BridgeDB part of this option is not yet
+    implemented.  Until BridgeDB is updated to obey this option, your
+    bridge will make this request, but it will not (yet) be obeyed.
+
 [[ContactInfo]] **ContactInfo** __email_address__::
     Administrative contact information for this relay or bridge. This line
     can be used to contact you if your relay or bridge is misconfigured or
@@ -1677,7 +1815,12 @@ is non-zero):
     descriptors containing these lines and that Google indexes them, so
     spammers might also collect them. You may want to obscure the fact
     that it's an email address and/or generate a new address for this
-    purpose.
+    purpose. +
+ +
+    ContactInfo **must** be set to a working address if you run more than one
+    relay or bridge.  (Really, everybody running a relay or bridge should set
+    it.)
+
 
 [[ExitRelay]] **ExitRelay** **0**|**1**|**auto**::
     Tells Tor whether to run as an exit relay.  If Tor is running as a
@@ -1746,8 +1889,15 @@ is non-zero):
     write your IPv6 rules using accept6/reject6 \*6, and your IPv4 rules using
     accept/reject \*4. If you want to \_replace_ the default exit policy, end
     your exit policy with either a reject \*:* or an accept \*:*. Otherwise,
-    you're \_augmenting_ (prepending to) the default exit policy. The default
-    exit policy is: +
+    you're \_augmenting_ (prepending to) the default exit policy. +
+ +
+    If you want to use a reduced exit policy rather than the default exit
+    policy, set "ReducedExitPolicy 1". If you want to _replace_ the default
+    exit policy with your custom exit policy, end your exit policy with either
+    a reject *:* or an accept *:*. Otherwise, you’re _augmenting_ (prepending
+    to) the default or reduced exit policy. +
+ +
+    The default exit policy is:
 
        reject *:25
        reject *:119
@@ -1761,7 +1911,7 @@ is non-zero):
        reject *:6881-6999
        accept *:*
 
-[[ExitPolicyDefault]]::
+[[ExitPolicyDefault]] **ExitPolicyDefault**::
     Since the default exit policy uses accept/reject *, it applies to both
     IPv4 and IPv6 addresses.
 
@@ -1781,6 +1931,99 @@ is non-zero):
     This option is off by default, because it lists all public relay IP
     addresses in the ExitPolicy, even those relay operators might prefer not
     to disclose.
+    (Default: 0)
+
+[[ReducedExitPolicy]] **ReducedExitPolicy** **0**|**1**::
+    If set, use a reduced exit policy rather than the default one. +
+ +
+    The reduced exit policy is an alternative to the default exit policy. It
+    allows as many Internet services as possible while still blocking the
+    majority of TCP ports. Currently, the policy allows approximately 65 ports.
+    This reduces the odds that your node will be used for peer-to-peer
+    applications. +
+ +
+    The reduced exit policy is:
+
+        accept *:20-21
+        accept *:22
+        accept *:23
+        accept *:43
+        accept *:53
+        accept *:79
+        accept *:80-81
+        accept *:88
+        accept *:110
+        accept *:143
+        accept *:194
+        accept *:220
+        accept *:389
+        accept *:443
+        accept *:464
+        accept *:465
+        accept *:531
+        accept *:543-544
+        accept *:554
+        accept *:563
+        accept *:587
+        accept *:636
+        accept *:706
+        accept *:749
+        accept *:873
+        accept *:902-904
+        accept *:981
+        accept *:989-990
+        accept *:991
+        accept *:992
+        accept *:993
+        accept *:994
+        accept *:995
+        accept *:1194
+        accept *:1220
+        accept *:1293
+        accept *:1500
+        accept *:1533
+        accept *:1677
+        accept *:1723
+        accept *:1755
+        accept *:1863
+        accept *:2082
+        accept *:2083
+        accept *:2086-2087
+        accept *:2095-2096
+        accept *:2102-2104
+        accept *:3128
+        accept *:3389
+        accept *:3690
+        accept *:4321
+        accept *:4643
+        accept *:5050
+        accept *:5190
+        accept *:5222-5223
+        accept *:5228
+        accept *:5900
+        accept *:6660-6669
+        accept *:6679
+        accept *:6697
+        accept *:8000
+        accept *:8008
+        accept *:8074
+        accept *:8080
+        accept *:8082
+        accept *:8087-8088
+        accept *:8232-8233
+        accept *:8332-8333
+        accept *:8443
+        accept *:8888
+        accept *:9418
+        accept *:9999
+        accept *:10000
+        accept *:11371
+        accept *:19294
+        accept *:19638
+        accept *:50002
+        accept *:64738
+        reject *:*
+
     (Default: 0)
 
 [[IPv6Exit]] **IPv6Exit** **0**|**1**::
@@ -1805,7 +2048,10 @@ is non-zero):
     compromise its concealment. +
  +
     When listing a node, it's better to list it by fingerprint than by
-    nickname: fingerprints are more reliable.
+    nickname: fingerprints are more reliable. +
+ +
+    If you run more than one relay, the MyFamily option on each relay
+    **must** list all other relays, as described above.
 
 [[Nickname]] **Nickname** __name__::
     Set the server's nickname to \'name'. Nicknames must be between 1 and 19
@@ -1888,6 +2134,11 @@ is non-zero):
     server is still alive and doing useful things. Settings this
     to 0 will disable the heartbeat. Otherwise, it must be at least 30
     minutes. (Default: 6 hours)
+
+[[MainloopStats]] **MainloopStats** **0**|**1**::
+    Log main loop statistics every **HeartbeatPeriod** seconds. This is a log
+    level __notice__ message designed to help developers instrumenting Tor's
+    main event loop. (Default: 0)
 
 [[AccountingMax]] **AccountingMax** __N__ **bytes**|**KBytes**|**MBytes**|**GBytes**|**TBytes**|**KBits**|**MBits**|**GBits**|**TBits**::
     Limits the max number of bytes sent and received within a set time period
@@ -2101,6 +2352,17 @@ is non-zero):
     key.  Instead, you'll have to use "tor --keygen" to manage the permanent
     ed25519 master identity key, as well as the corresponding temporary
     signing keys and certificates. (Default: 0)
+
+[[KeyDirectory]] **KeyDirectory** __DIR__::
+    Store secret keys in DIR. Can not be changed while tor is
+    running.
+    (Default: the "keys" subdirectory of DataDirectory.)
+
+[[KeyDirectoryGroupReadable]] **KeyDirectoryGroupReadable** **0**|**1**::
+    If this option is set to 0, don't allow the filesystem group to read the
+    KeywDirectory. If the option is set to 1, make the KeyDirectory readable
+    by the default GID. (Default: 0)
+
 
 DIRECTORY SERVER OPTIONS
 ------------------------
@@ -2345,9 +2607,29 @@ on the public Tor network.
 
 [[AuthDirHasIPv6Connectivity]] **AuthDirHasIPv6Connectivity** **0**|**1**::
     Authoritative directories only. When set to 0, OR ports with an
-    IPv6 address are being accepted without reachability testing.
-    When set to 1, IPv6 OR ports are being tested just like IPv4 OR
-    ports. (Default: 0)
+    IPv6 address are not included in the authority's votes. When set to 1,
+    IPv6 OR ports are tested for reachability like IPv4 OR ports. If the
+    reachability test succeeds, the authority votes for the IPv6 ORPort, and
+    votes Running for the relay. If the reachability test fails, the authority
+    does not vote for the IPv6 ORPort, and does not vote Running (Default: 0)  +
++
+    The content of the consensus depends on the number of voting authorities
+    that set AuthDirHasIPv6Connectivity:
+
+      If no authorities set AuthDirHasIPv6Connectivity 1, there will be no
+      IPv6 ORPorts in the consensus.
+
+      If a minority of authorities set AuthDirHasIPv6Connectivity 1,
+      unreachable IPv6 ORPorts will be removed from the consensus. But the
+      majority of IPv4-only authorities will still vote the relay as Running.
+      Reachable IPv6 ORPort lines will be included in the consensus
+
+      If a majority of voting authorities set AuthDirHasIPv6Connectivity 1,
+      relays with unreachable IPv6 ORPorts will not be listed as Running.
+      Reachable IPv6 ORPort lines will be included in the consensus
+      (To ensure that any valid majority will vote relays with unreachable
+      IPv6 ORPorts not Running, 75% of authorities must set
+      AuthDirHasIPv6Connectivity 1.)
 
 [[MinMeasuredBWsForAuthToIgnoreAdvertised]] **MinMeasuredBWsForAuthToIgnoreAdvertised** __N__::
     A total value, in abstract bandwidth units, describing how much
@@ -2388,7 +2670,7 @@ The following options are used to configure a hidden service.
     you're using a Tor controller that handles hidserv publishing for you.
     (Default: 1)
 
-[[HiddenServiceVersion]] **HiddenServiceVersion** __version__,__version__,__...__::
+[[HiddenServiceVersion]] **HiddenServiceVersion** **2**|**3**::
     A list of rendezvous service descriptor versions to publish for the hidden
     service. Currently, versions 2 and 3 are supported. (Default: 2)
 
@@ -2413,7 +2695,7 @@ The following options are used to configure a hidden service.
 [[HiddenServiceMaxStreams]] **HiddenServiceMaxStreams** __N__::
    The maximum number of simultaneous streams (connections) per rendezvous
    circuit. The maximum value allowed is 65535. (Setting this to 0 will allow
-   an unlimited number of simultanous streams.) (Default: 0)
+   an unlimited number of simultaneous streams.) (Default: 0)
 
 [[HiddenServiceMaxStreamsCloseCircuit]] **HiddenServiceMaxStreamsCloseCircuit** **0**|**1**::
    If set to 1, then exceeding **HiddenServiceMaxStreams** will cause the
@@ -2434,7 +2716,7 @@ The following options are used to configure a hidden service.
 
 [[HiddenServiceNumIntroductionPoints]] **HiddenServiceNumIntroductionPoints** __NUM__::
     Number of introduction points the hidden service will have. You can't
-    have more than 10. (Default: 3)
+    have more than 10 for v2 service and 20 for v3. (Default: 3)
 
 [[HiddenServiceSingleHopMode]] **HiddenServiceSingleHopMode** **0**|**1**::
     **Experimental - Non Anonymous** Hidden Services on a tor instance in
@@ -2470,6 +2752,101 @@ The following options are used to configure a hidden service.
     including setting SOCKSPort to "0". Can not be changed while tor is
     running. (Default: 0)
 
+DENIAL OF SERVICE MITIGATION OPTIONS
+------------------------------------
+
+The following options are useful only for a public relay. They control the
+Denial of Service mitigation subsystem.
+
+[[DoSCircuitCreationEnabled]] **DoSCircuitCreationEnabled** **0**|**1**|**auto**::
+
+    Enable circuit creation DoS mitigation. If enabled, tor will cache client
+    IPs along with statistics in order to detect circuit DoS attacks. If an
+    address is positively identified, tor will activate defenses against the
+    address. See the DoSCircuitCreationDefenseType option for more details.
+    This is a client to relay detection only. "auto" means use the consensus
+    parameter. If not defined in the consensus, the value is 0.
+    (Default: auto)
+
+[[DoSCircuitCreationMinConnections]] **DoSCircuitCreationMinConnections** __NUM__::
+
+    Minimum threshold of concurrent connections before a client address can be
+    flagged as executing a circuit creation DoS. In other words, once a client
+    address reaches the circuit rate and has a minimum of NUM concurrent
+    connections, a detection is positive. "0" means use the consensus
+    parameter. If not defined in the consensus, the value is 3.
+    (Default: 0)
+
+[[DoSCircuitCreationRate]] **DoSCircuitCreationRate** __NUM__::
+
+    The allowed circuit creation rate per second applied per client IP
+    address. If this option is 0, it obeys a consensus parameter. If not
+    defined in the consensus, the value is 3.
+    (Default: 0)
+
+[[DoSCircuitCreationBurst]] **DoSCircuitCreationBurst** __NUM__::
+
+    The allowed circuit creation burst per client IP address. If the circuit
+    rate and the burst are reached, a client is marked as executing a circuit
+    creation DoS. "0" means use the consensus parameter. If not defined in the
+    consensus, the value is 90.
+    (Default: 0)
+
+[[DoSCircuitCreationDefenseType]] **DoSCircuitCreationDefenseType** __NUM__::
+
+    This is the type of defense applied to a detected client address. The
+    possible values are:
+
+      1: No defense.
+      2: Refuse circuit creation for the DoSCircuitCreationDefenseTimePeriod period of time.
++
+    "0" means use the consensus parameter. If not defined in the consensus,
+    the value is 2.
+    (Default: 0)
+
+[[DoSCircuitCreationDefenseTimePeriod]] **DoSCircuitCreationDefenseTimePeriod** __N__ **seconds**|**minutes**|**hours**::
+
+    The base time period in seconds that the DoS defense is activated for. The
+    actual value is selected randomly for each activation from N+1 to 3/2 * N.
+    "0" means use the consensus parameter. If not defined in the consensus,
+    the value is 3600 seconds (1 hour).  (Default: 0)
+
+[[DoSConnectionEnabled]] **DoSConnectionEnabled** **0**|**1**|**auto**::
+
+    Enable the connection DoS mitigation. For client address only, this allows
+    tor to mitigate against large number of concurrent connections made by a
+    single IP address. "auto" means use the consensus parameter. If not
+    defined in the consensus, the value is 0.
+    (Default: auto)
+
+[[DoSConnectionMaxConcurrentCount]] **DoSConnectionMaxConcurrentCount** __NUM__::
+
+    The maximum threshold of concurrent connection from a client IP address.
+    Above this limit, a defense selected by DoSConnectionDefenseType is
+    applied. "0" means use the consensus parameter. If not defined in the
+    consensus, the value is 100.
+    (Default: 0)
+
+[[DoSConnectionDefenseType]] **DoSConnectionDefenseType** __NUM__::
+
+    This is the type of defense applied to a detected client address for the
+    connection mitigation. The possible values are:
+
+      1: No defense.
+      2: Immediately close new connections.
++
+    "0" means use the consensus parameter. If not defined in the consensus,
+    the value is 2.
+    (Default: 0)
+
+[[DoSRefuseSingleHopClientRendezvous]] **DoSRefuseSingleHopClientRendezvous** **0**|**1**|**auto**::
+
+    Refuse establishment of rendezvous points for single hop clients. In other
+    words, if a client directly connects to the relay and sends an
+    ESTABLISH_RENDEZVOUS cell, it is silently dropped. "auto" means use the
+    consensus parameter. If not defined in the consensus, the value is 0.
+    (Default: auto)
+
 TESTING NETWORK OPTIONS
 -----------------------
 
@@ -2496,7 +2873,7 @@ The following options are used for running a testing Tor network.
           4 (for 40 seconds), 8, 16, 32, 60
        ClientBootstrapConsensusMaxDownloadTries 80
        ClientBootstrapConsensusAuthorityOnlyMaxDownloadTries 80
-       TestingClientDNSRejectInternalAddresses 0
+       ClientDNSRejectInternalAddresses 0
        ClientRejectInternalAddresses 0
        CountPrivateBandwidth 1
        ExitPolicyRejectPrivate 0
@@ -2707,13 +3084,6 @@ The following options are used for running a testing Tor network.
     we replace it and issue a new key?
     (Default: 3 hours for link and auth; 1 day for signing.)
 
-[[ClientDNSRejectInternalAddresses]] [[TestingClientDNSRejectInternalAddresses]] **TestingClientDNSRejectInternalAddresses** **0**|**1**::
-    If true, Tor does not believe any anonymously retrieved DNS answer that
-    tells it that an address resolves to an internal address (like 127.0.0.1 or
-    192.168.0.1). This option prevents certain browser-based attacks; don't
-    turn it off unless you know what you're doing. (Default: 1)
-
-
 NON-PERSISTENT OPTIONS
 ----------------------
 
@@ -2773,40 +3143,35 @@ FILES
 **@LOCALSTATEDIR@/lib/tor/**::
     The tor process stores keys and other data here.
 
-__DataDirectory__**/cached-status/**::
-    The most recently downloaded network status document for each authority.
-    Each file holds one such document; the filenames are the hexadecimal
-    identity key fingerprints of the directory authorities.  Obsolete;
-    no longer in use.
 
-__DataDirectory__**/cached-certs**::
+__CacheDirectory__**/cached-certs**::
     This file holds downloaded directory key certificates that are used to
     verify authenticity of documents generated by Tor directory authorities.
 
-__DataDirectory__**/cached-consensus** and/or **cached-microdesc-consensus**::
+__CacheDirectory__**/cached-consensus** and/or **cached-microdesc-consensus**::
     The most recent consensus network status document we've downloaded.
 
-__DataDirectory__**/cached-descriptors** and **cached-descriptors.new**::
+__CacheDirectory__**/cached-descriptors** and **cached-descriptors.new**::
     These files hold downloaded router statuses. Some routers may appear more
     than once; if so, the most recently published descriptor is used. Lines
     beginning with @-signs are annotations that contain more information about
     a given router. The ".new" file is an append-only journal; when it gets
     too large, all entries are merged into a new cached-descriptors file.
 
-__DataDirectory__**/cached-extrainfo** and **cached-extrainfo.new**::
+__CacheDirectory__**/cached-extrainfo** and **cached-extrainfo.new**::
    As "cached-descriptors", but holds optionally-downloaded "extra-info"
    documents. Relays use these documents to send inessential information
    about statistics, bandwidth history, and network health to the
    authorities. They aren't fetched by default; see the DownloadExtraInfo
    option for more info.
 
-__DataDirectory__**/cached-microdescs** and **cached-microdescs.new**::
+__CacheDirectory__**/cached-microdescs** and **cached-microdescs.new**::
     These files hold downloaded microdescriptors.  Lines beginning with
     @-signs are annotations that contain more information about a given
     router. The ".new" file is an append-only journal; when it gets too
     large, all entries are merged into a new cached-microdescs file.
 
-__DataDirectory__**/cached-routers** and **cached-routers.new**::
+__CacheDirectory__**/cached-routers** and **cached-routers.new**::
     Obsolete versions of cached-descriptors and cached-descriptors.new. When
     Tor can't find the newer files, it looks here instead.
 
@@ -2824,11 +3189,11 @@ __DataDirectory__**/sr-state**::
     Authority only. State file used to record information about the current
     status of the shared-random-value voting state.
 
-__DataDirectory__**/diff-cache**::
+__CacheDirectory__**/diff-cache**::
     Directory cache only. Holds older consensuses, and diffs from older
     consensuses to the most recent consensus of each type, compressed
     in various ways. Each file contains a set of key-value arguments
-    decribing its contents, followed by a single NUL byte, followed by the
+    describing its contents, followed by a single NUL byte, followed by the
     main file contents.
 
 __DataDirectory__**/bw_accounting**::
@@ -2854,63 +3219,60 @@ __DataDirectory__**/key-pinning-journal**::
     or factoring the RSA1024 key will no longer let an attacker impersonate
     the relay.
 
-__DataDirectory__**/keys/***::
-    Only used by servers. Holds identity keys and onion keys.
-
-__DataDirectory__**/keys/authority_identity_key**::
+__KeyDirectory__**/authority_identity_key**::
     A v3 directory authority's master identity key, used to authenticate its
     signing key. Tor doesn't use this while it's running. The tor-gencert
     program uses this. If you're running an authority, you should keep this
     key offline, and not actually put it here.
 
-__DataDirectory__**/keys/authority_certificate**::
+__KeyDirectory__**/authority_certificate**::
     A v3 directory authority's certificate, which authenticates the authority's
     current vote- and consensus-signing key using its master identity key.
     Only directory authorities use this file.
 
-__DataDirectory__**/keys/authority_signing_key**::
+__KeyDirectory__**/authority_signing_key**::
     A v3 directory authority's signing key, used to sign votes and consensuses.
     Only directory authorities use this file.  Corresponds to the
     **authority_certificate** cert.
 
-__DataDirectory__**/keys/legacy_certificate**::
+__KeyDirectory__**/legacy_certificate**::
     As authority_certificate: used only when V3AuthUseLegacyKey is set.
     See documentation for V3AuthUseLegacyKey.
 
-__DataDirectory__**/keys/legacy_signing_key**::
+__KeyDirectory__**/legacy_signing_key**::
     As authority_signing_key: used only when V3AuthUseLegacyKey is set.
     See documentation for V3AuthUseLegacyKey.
 
-__DataDirectory__**/keys/secret_id_key**::
+__KeyDirectory__**/secret_id_key**::
     A relay's RSA1024 permanent identity key, including private and public
     components.  Used to sign router descriptors, and to sign other keys.
 
-__DataDirectory__**/keys/ed25519_master_id_public_key**::
+__KeyDirectory__**/ed25519_master_id_public_key**::
     The public part of a relay's Ed25519 permanent identity key.
 
-__DataDirectory__**/keys/ed25519_master_id_secret_key**::
+__KeyDirectory__**/ed25519_master_id_secret_key**::
     The private part of a relay's Ed25519 permanent identity key.  This key
     is used to sign the medium-term ed25519 signing key.  This file can be
     kept offline, or kept encrypted. If so, Tor will not be able to generate
     new signing keys itself; you'll need to use tor --keygen yourself to do
     so.
 
-__DataDirectory__**/keys/ed25519_signing_secret_key**::
+__KeyDirectory__**/ed25519_signing_secret_key**::
     The private and public components of a relay's medium-term Ed25519 signing
     key. This key is authenticated by the Ed25519 master key, in turn
     authenticates other keys (and router descriptors).
 
-__DataDirectory__**/keys/ed25519_signing_cert**::
+__KeyDirectory__**/ed25519_signing_cert**::
     The certificate which authenticates "ed25519_signing_secret_key" as
     having been signed by the Ed25519 master key.
 
-__DataDirectory__**/keys/secret_onion_key** and **secret_onion_key.old**::
+__KeyDirectory__**/secret_onion_key** and **secret_onion_key.old**::
     A relay's RSA1024 short-term onion key. Used to decrypt old-style ("TAP")
     circuit extension requests. The ".old" file holds the previously
     generated key, which the relay uses to handle any requests that were
     made by clients that didn't have the new one.
 
-__DataDirectory__**/keys/secret_onion_key_ntor** and **secret_onion_key_ntor.old**::
+__KeyDirectory__**/secret_onion_key_ntor** and **secret_onion_key_ntor.old**::
     A relay's Curve25519 short-term onion key. Used to handle modern ("ntor")
     circuit extension requests. The ".old" file holds the previously
     generated key, which the relay uses to handle any requests that were
@@ -2937,11 +3299,11 @@ __DataDirectory__**/v3-status-votes**::
     Only for v3 authoritative directory servers. This file contains
     status votes from all the authoritative directory servers.
 
-__DataDirectory__**/unverified-consensus**::
+__CacheDirectory__**/unverified-consensus**::
     This file contains a network consensus document that has been downloaded,
     but which we didn't have the right certificates to check yet.
 
-__DataDirectory__**/unverified-microdesc-consensus**::
+__CacheDirectory__**/unverified-microdesc-consensus**::
     This file contains a microdescriptor-flavored network consensus document
     that has been downloaded, but which we didn't have the right certificates
     to check yet.

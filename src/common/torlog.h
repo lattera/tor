@@ -103,8 +103,10 @@
 #define LD_GUARD     (1u<<23)
 /** Generation and application of consensus diffs. */
 #define LD_CONSDIFF  (1u<<24)
+/** Denial of Service mitigation. */
+#define LD_DOS       (1u<<25)
 /** Number of logging domains in the code. */
-#define N_LOGGING_DOMAINS 25
+#define N_LOGGING_DOMAINS 26
 
 /** This log message is not safe to send to a callback-based logger
  * immediately.  Used as a flag, not a log domain. */
@@ -146,7 +148,11 @@ int add_file_log(const log_severity_list_t *severity, const char *filename,
 #ifdef HAVE_SYSLOG_H
 int add_syslog_log(const log_severity_list_t *severity,
                    const char* syslog_identity_tag);
-#endif
+#endif // HAVE_SYSLOG_H.
+#ifdef HAVE_ANDROID_LOG_H
+int add_android_log(const log_severity_list_t *severity,
+                    const char *android_identity_tag);
+#endif // HAVE_ANDROID_LOG_H.
 int add_callback_log(const log_severity_list_t *severity, log_callback cb);
 void logs_set_domain_logging(int enabled);
 int get_min_log_level(void);

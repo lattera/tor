@@ -19,7 +19,7 @@
  *      dns_seems_to_be_broken().
  *    <li>When a client has asked the relay, in a RELAY_BEGIN cell, to connect
  *      to a given server by hostname.  This happens via dns_resolve().
- *    <li>When a client has asked the rela, in a RELAY_RESOLVE cell, to look
+ *    <li>When a client has asked the relay, in a RELAY_RESOLVE cell, to look
  *      up a given server's IP address(es) by hostname. This also happens via
  *      dns_resolve().
  *   </ol>
@@ -457,7 +457,7 @@ purge_expired_resolves(time_t now)
         if (!pendconn->base_.marked_for_close) {
           connection_edge_end(pendconn, END_STREAM_REASON_TIMEOUT);
           circuit_detach_stream(circuit_get_by_edge_conn(pendconn), pendconn);
-          connection_free(TO_CONN(pendconn));
+          connection_free_(TO_CONN(pendconn));
         }
         tor_free(pend);
       }
@@ -670,7 +670,7 @@ dns_resolve(edge_connection_t *exitconn)
         /* If we made the connection pending, then we freed it already in
          * dns_cancel_pending_resolve().  If we marked it for close, it'll
          * get freed from the main loop.  Otherwise, can free it now. */
-        connection_free(TO_CONN(exitconn));
+        connection_free_(TO_CONN(exitconn));
       }
       break;
     default:
@@ -1101,7 +1101,7 @@ dns_cancel_pending_resolve,(const char *address))
     if (circ)
       circuit_detach_stream(circ, pendconn);
     if (!pendconn->base_.marked_for_close)
-      connection_free(TO_CONN(pendconn));
+      connection_free_(TO_CONN(pendconn));
     resolve->pending_connections = pend->next;
     tor_free(pend);
   }
@@ -1230,7 +1230,7 @@ inform_pending_connections(cached_resolve_t *resolve)
         /* This detach must happen after we send the resolved cell. */
         circuit_detach_stream(circuit_get_by_edge_conn(pendconn), pendconn);
       }
-      connection_free(TO_CONN(pendconn));
+      connection_free_(TO_CONN(pendconn));
     } else {
       circuit_t *circ;
       if (pendconn->base_.purpose == EXIT_PURPOSE_CONNECT) {
@@ -1259,7 +1259,7 @@ inform_pending_connections(cached_resolve_t *resolve)
         circ = circuit_get_by_edge_conn(pendconn);
         tor_assert(circ);
         circuit_detach_stream(circ, pendconn);
-        connection_free(TO_CONN(pendconn));
+        connection_free_(TO_CONN(pendconn));
       }
     }
     resolve->pending_connections = pend->next;
@@ -1438,13 +1438,30 @@ configure_nameservers(int force)
 
 #define SET(k,v)  evdns_base_set_option(the_evdns_base, (k), (v))
 
+  // If we only have one nameserver, it does not make sense to back off
+  // from it for a timeout. Unfortunately, the value for max-timeouts is
+  // currently clamped by libevent to 255, but it does not hurt to set
+  // it higher in case libevent gets a patch for this.
+  // Reducing attempts in the case of just one name server too, because
+  // it is very likely to be a local one where a network connectivity
+  // issue should not cause an attempt to fail.
   if (evdns_base_count_nameservers(the_evdns_base) == 1) {
-    SET("max-timeouts:", "16");
-    SET("timeout:", "10");
+    SET("max-timeouts:", "1000000");
+    SET("attempts:", "1");
   } else {
     SET("max-timeouts:", "3");
-    SET("timeout:", "5");
   }
+
+  // Elongate the queue of maximum inflight dns requests, so if a bunch
+  // time out at the resolver (happens commonly with unbound) we won't
+  // stall every other DNS request. This potentially means some wasted
+  // CPU as there's a walk over a linear queue involved, but this is a
+  // much better tradeoff compared to just failing DNS requests because
+  // of a full queue.
+  SET("max-inflight:", "8192");
+
+  // Time out after 5 seconds if no reply.
+  SET("timeout:", "5");
 
   if (options->ServerDNSRandomizeCase)
     SET("randomize-case:", "1");
@@ -1561,10 +1578,11 @@ evdns_callback(int result, char type, int count, int ttl, void *addresses,
                 escaped_safe_str(hostname));
       tor_free(escaped_address);
     } else if (count) {
-      log_warn(LD_EXIT, "eventdns returned only non-IPv4 answers for %s.",
+      log_info(LD_EXIT, "eventdns returned only unrecognized answer types "
+               " for %s.",
                escaped_safe_str(string_address));
     } else {
-      log_warn(LD_BUG, "eventdns returned no addresses or error for %s!",
+      log_info(LD_EXIT, "eventdns returned no addresses or error for %s.",
                escaped_safe_str(string_address));
     }
   }
@@ -1648,7 +1666,7 @@ launch_resolve,(cached_resolve_t *resolve))
   tor_addr_t a;
   int r;
 
-  if (get_options()->DisableNetwork)
+  if (net_is_disabled())
     return -1;
 
   /* What? Nameservers not configured?  Sounds like a bug. */
@@ -1883,7 +1901,7 @@ launch_test_addresses(evutil_socket_t fd, short event, void *args)
   (void)event;
   (void)args;
 
-  if (options->DisableNetwork)
+  if (net_is_disabled())
     return;
 
   log_info(LD_EXIT, "Launching checks to see whether our nameservers like to "

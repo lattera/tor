@@ -62,7 +62,6 @@ double fabs(double x);
 #include "routerparse.h"
 #include "statefile.h"
 #include "crypto_curve25519.h"
-#include "onion_ntor.h"
 
 /** Run unit tests for the onion handshake code. */
 static void
@@ -174,7 +173,7 @@ test_bad_onion_handshake(void *arg)
                                             s_buf, s_keys, 40));
   c_buf[64] ^= 33;
 
-  /* (Let the server procede) */
+  /* (Let the server proceed) */
   tt_int_op(0, OP_EQ,
             onion_skin_TAP_server_handshake(c_buf, pk, NULL,
                                             s_buf, s_keys, 40));
@@ -345,8 +344,8 @@ test_onion_queues(void *arg)
   tt_int_op(0,OP_EQ, onion_num_pending(ONION_HANDSHAKE_TYPE_NTOR));
 
  done:
-  circuit_free(TO_CIRCUIT(circ1));
-  circuit_free(TO_CIRCUIT(circ2));
+  circuit_free_(TO_CIRCUIT(circ1));
+  circuit_free_(TO_CIRCUIT(circ2));
   tor_free(create1);
   tor_free(create2);
   tor_free(onionskin);
@@ -616,7 +615,7 @@ test_rend_fns(void *arg)
  done:
   if (descs) {
     for (i = 0; i < smartlist_len(descs); i++)
-      rend_encoded_v2_service_descriptor_free(smartlist_get(descs, i));
+      rend_encoded_v2_service_descriptor_free_(smartlist_get(descs, i));
     smartlist_free(descs);
   }
   if (parsed)
@@ -897,6 +896,24 @@ test_geoip(void *arg)
   tt_str_op(entry_stats_2,OP_EQ, s);
   tor_free(s);
 
+  /* Test the OOM handler. Add a client, run the OOM. */
+  geoip_entry_stats_init(now);
+  SET_TEST_ADDRESS(100);
+  geoip_note_client_seen(GEOIP_CLIENT_CONNECT, &addr, NULL,
+                         now - (12 * 60 * 60));
+  /* We've seen this 12 hours ago. Run the OOM, it should clean the entry
+   * because it is above the minimum cutoff of 4 hours. */
+  size_t bytes_removed = geoip_client_cache_handle_oom(now, 1000);
+  tt_size_op(bytes_removed, OP_GT, 0);
+
+  /* Do it again but this time with an entry with a lower cutoff. */
+  geoip_entry_stats_init(now);
+  SET_TEST_ADDRESS(100);
+  geoip_note_client_seen(GEOIP_CLIENT_CONNECT, &addr, NULL,
+                         now - (3 * 60 * 60));
+  bytes_removed = geoip_client_cache_handle_oom(now, 1000);
+  tt_size_op(bytes_removed, OP_EQ, 0);
+
   /* Stop collecting entry statistics. */
   geoip_entry_stats_term();
   get_options_mutable()->EntryStatistics = 0;
@@ -1167,6 +1184,7 @@ struct testgroup_t testgroups[] = {
   { "accounting/", accounting_tests },
   { "addr/", addr_tests },
   { "address/", address_tests },
+  { "address_set/", address_set_tests },
   { "buffer/", buffer_tests },
   { "cellfmt/", cell_format_tests },
   { "cellqueue/", cell_queue_tests },
@@ -1178,6 +1196,7 @@ struct testgroup_t testgroups[] = {
   { "circuitlist/", circuitlist_tests },
   { "circuitmux/", circuitmux_tests },
   { "circuituse/", circuituse_tests },
+  { "circuitstats/", circuitstats_tests },
   { "compat/libevent/", compat_libevent_tests },
   { "config/", config_tests },
   { "connection/", connection_tests },
@@ -1192,6 +1211,7 @@ struct testgroup_t testgroups[] = {
   { "dir/", dir_tests },
   { "dir_handle_get/", dir_handle_get_tests },
   { "dir/md/", microdesc_tests },
+  { "dos/", dos_tests },
   { "entryconn/", entryconn_tests },
   { "entrynodes/", entrynodes_tests },
   { "guardfraction/", guardfraction_tests },
@@ -1201,6 +1221,7 @@ struct testgroup_t testgroups[] = {
   { "hs_cell/", hs_cell_tests },
   { "hs_common/", hs_common_tests },
   { "hs_config/", hs_config_tests },
+  { "hs_control/", hs_control_tests },
   { "hs_descriptor/", hs_descriptor },
   { "hs_ntor/", hs_ntor_tests },
   { "hs_service/", hs_service_tests },
@@ -1223,10 +1244,10 @@ struct testgroup_t testgroups[] = {
   { "relaycell/", relaycell_tests },
   { "rend_cache/", rend_cache_tests },
   { "replaycache/", replaycache_tests },
+  { "router/", router_tests },
   { "routerkeys/", routerkeys_tests },
   { "routerlist/", routerlist_tests },
   { "routerset/" , routerset_tests },
-  { "rust/", rust_tests },
   { "scheduler/", scheduler_tests },
   { "socks/", socks_tests },
   { "shared-random/", sr_tests },

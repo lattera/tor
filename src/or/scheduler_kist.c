@@ -116,7 +116,7 @@ channel_outbuf_length(channel_t *chan)
   /* In theory, this can not happen because we can not scheduler a channel
    * without a connection that has its outbuf initialized. Just in case, bug
    * on this so we can understand a bit more why it happened. */
-  if (BUG(BASE_CHAN_TO_TLS(chan)->conn == NULL)) {
+  if (SCHED_BUG(BASE_CHAN_TO_TLS(chan)->conn == NULL, chan)) {
     return 0;
   }
   return buf_datalen(TO_CONN(BASE_CHAN_TO_TLS(chan)->conn)->outbuf);
@@ -158,6 +158,7 @@ static void
 free_all_socket_info(void)
 {
   HT_FOREACH_FN(socket_table_s, &socket_table, free_socket_info_by_ent, NULL);
+  HT_CLEAR(socket_table_s, &socket_table);
 }
 
 static socket_table_ent_t *
@@ -263,29 +264,32 @@ update_socket_info_impl, (socket_table_ent_t *ent))
    *                                         ^ ((cwnd * mss) * factor) bytes
    */
 
-   /* Assuming all these values from the kernel are uint32_t still, they will
-   * always fit into a int64_t tcp_space variable. */
-  tcp_space = (ent->cwnd - ent->unacked) * (int64_t)ent->mss;
-  if (tcp_space < 0) {
+  /* These values from the kernel are uint32_t, they will always fit into a
+   * int64_t tcp_space variable but if the congestion window cwnd is smaller
+   * than the unacked packets, the remaining TCP space is set to 0. */
+  if (ent->cwnd >= ent->unacked) {
+    tcp_space = (ent->cwnd - ent->unacked) * (int64_t)(ent->mss);
+  } else {
     tcp_space = 0;
   }
 
   /* The clamp_double_to_int64 makes sure the first part fits into an int64_t.
    * In fact, if sock_buf_size_factor is still forced to be >= 0 in config.c,
-   * then it will be positive for sure. Then we subtract a uint32_t. At worst
-   * we end up negative, but then we just set extra_space to 0 in the sanity
-   * check.*/
+   * then it will be positive for sure. Then we subtract a uint32_t. Getting a
+   * negative value is OK, see after how it is being handled. */
   extra_space =
     clamp_double_to_int64(
                  (ent->cwnd * (int64_t)ent->mss) * sock_buf_size_factor) -
     ent->notsent;
-  if (extra_space < 0) {
-    extra_space = 0;
+  if ((tcp_space + extra_space) < 0) {
+    /* This means that the "notsent" queue is just too big so we shouldn't put
+     * more in the kernel for now. */
+    ent->limit = 0;
+  } else {
+    /* The positive sum of two int64_t will always fit into an uint64_t.
+     * And we know this will always be positive, since we checked above. */
+    ent->limit = (uint64_t)tcp_space + (uint64_t)extra_space;
   }
-
-  /* Finally we set the limit. Adding two positive int64_t together will always
-   * fit in an uint64_t. */
-  ent->limit = (uint64_t)tcp_space + (uint64_t)extra_space;
   return;
 
 #else /* !(defined(HAVE_KIST_SUPPORT)) */
@@ -294,13 +298,18 @@ update_socket_info_impl, (socket_table_ent_t *ent))
 
  fallback:
   /* If all of a sudden we don't have kist support, we just zero out all the
-   * variables for this socket since we don't know what they should be.
-   * We also effectively allow the socket write as much as it wants to the
-   * kernel, effectively returning it to vanilla scheduler behavior. Writes
-   * are still limited by the lower layers of Tor: socket blocking, full
-   * outbuf, etc. */
+   * variables for this socket since we don't know what they should be. We
+   * also allow the socket to write as much as it can from the estimated
+   * number of cells the lower layer can accept, effectively returning it to
+   * Vanilla scheduler behavior. */
   ent->cwnd = ent->unacked = ent->mss = ent->notsent = 0;
-  ent->limit = INT_MAX;
+  /* This function calls the specialized channel object (currently channeltls)
+   * and ask how many cells it can write on the outbuf which we then multiply
+   * by the size of the cells for this channel. The cast is because this
+   * function requires a non-const channel object, meh. */
+  ent->limit = channel_num_cells_writeable((channel_t *) ent->chan) *
+               (get_cell_network_size(ent->chan->wide_circ_ids) +
+                TLS_PER_CELL_OVERHEAD);
 }
 
 /* Given a socket that isn't in the table, add it.
@@ -353,10 +362,10 @@ outbuf_table_remove(outbuf_table_t *table, channel_t *chan)
 
 /* Set the scheduler running interval. */
 static void
-set_scheduler_run_interval(const networkstatus_t *ns)
+set_scheduler_run_interval(void)
 {
   int old_sched_run_interval = sched_run_interval;
-  sched_run_interval = kist_scheduler_run_interval(ns);
+  sched_run_interval = kist_scheduler_run_interval();
   if (old_sched_run_interval != sched_run_interval) {
     log_info(LD_SCHED, "Scheduler KIST changing its running interval "
                        "from %" PRId32 " to %" PRId32,
@@ -364,13 +373,13 @@ set_scheduler_run_interval(const networkstatus_t *ns)
   }
 }
 
-/* Return true iff the channel hasn’t hit its kist-imposed write limit yet */
+/* Return true iff the channel hasn't hit its kist-imposed write limit yet */
 static int
 socket_can_write(socket_table_t *table, const channel_t *chan)
 {
   socket_table_ent_t *ent = NULL;
   ent = socket_table_search(table, chan);
-  IF_BUG_ONCE(!ent) {
+  if (SCHED_BUG(!ent, chan)) {
     return 1; // Just return true, saying that kist wouldn't limit the socket
   }
 
@@ -390,10 +399,15 @@ update_socket_info(socket_table_t *table, const channel_t *chan)
 {
   socket_table_ent_t *ent = NULL;
   ent = socket_table_search(table, chan);
-  IF_BUG_ONCE(!ent) {
+  if (SCHED_BUG(!ent, chan)) {
     return; // Whelp. Entry didn't exist for some reason so nothing to do.
   }
   update_socket_info_impl(ent);
+  log_debug(LD_SCHED, "chan=%" PRIu64 " updated socket info, limit: %" PRIu64
+                      ", cwnd: %" PRIu32 ", unacked: %" PRIu32
+                      ", notsent: %" PRIu32 ", mss: %" PRIu32,
+            ent->chan->global_identifier, ent->limit, ent->cwnd, ent->unacked,
+            ent->notsent, ent->mss);
 }
 
 /* Increment the channel's socket written value by the number of bytes. */
@@ -402,7 +416,7 @@ update_socket_written(socket_table_t *table, channel_t *chan, size_t bytes)
 {
   socket_table_ent_t *ent = NULL;
   ent = socket_table_search(table, chan);
-  IF_BUG_ONCE(!ent) {
+  if (SCHED_BUG(!ent, chan)) {
     return; // Whelp. Entry didn't exist so nothing to do.
   }
 
@@ -460,20 +474,16 @@ kist_free_all(void)
 
 /* Function of the scheduler interface: on_channel_free() */
 static void
-kist_on_channel_free(const channel_t *chan)
+kist_on_channel_free_fn(const channel_t *chan)
 {
   free_socket_info_by_chan(&socket_table, chan);
 }
 
 /* Function of the scheduler interface: on_new_consensus() */
 static void
-kist_scheduler_on_new_consensus(const networkstatus_t *old_c,
-                                const networkstatus_t *new_c)
+kist_scheduler_on_new_consensus(void)
 {
-  (void) old_c;
-  (void) new_c;
-
-  set_scheduler_run_interval(new_c);
+  set_scheduler_run_interval();
 }
 
 /* Function of the scheduler interface: on_new_options() */
@@ -483,7 +493,7 @@ kist_scheduler_on_new_options(void)
   sock_buf_size_factor = get_options()->KISTSockBufSizeFactor;
 
   /* Calls kist_scheduler_run_interval which calls get_options(). */
-  set_scheduler_run_interval(NULL);
+  set_scheduler_run_interval();
 }
 
 /* Function of the scheduler interface: init() */
@@ -524,9 +534,13 @@ kist_scheduler_schedule(void)
   monotime_get(&now);
 
   /* If time is really monotonic, we can never have now being smaller than the
-   * last scheduler run. The scheduler_last_run at first is set to 0. */
+   * last scheduler run. The scheduler_last_run at first is set to 0.
+   * Unfortunately, not all platforms guarantee monotonic time so we log at
+   * info level but don't make it more noisy. */
   diff = monotime_diff_msec(&scheduler_last_run, &now);
-  IF_BUG_ONCE(diff < 0) {
+  if (diff < 0) {
+    log_info(LD_SCHED, "Monotonic time between now and last run of scheduler "
+                       "is negative: %" PRId64 ". Setting diff to 0.", diff);
     diff = 0;
   }
   if (diff < sched_run_interval) {
@@ -572,7 +586,7 @@ kist_scheduler_run(void)
     /* get best channel */
     chan = smartlist_pqueue_pop(cp, scheduler_compare_channels,
                                 offsetof(channel_t, sched_heap_idx));
-    IF_BUG_ONCE(!chan) {
+    if (SCHED_BUG(!chan, NULL)) {
       /* Some-freaking-how a NULL got into the channels_pending. That should
        * never happen, but it should be harmless to ignore it and keep looping.
        */
@@ -597,6 +611,18 @@ kist_scheduler_run(void)
     if (socket_can_write(&socket_table, chan)) {
       /* flush to channel queue/outbuf */
       flush_result = (int)channel_flush_some_cells(chan, 1); // 1 for num cells
+      /* XXX: While flushing cells, it is possible that the connection write
+       * fails leading to the channel to be closed which triggers a release
+       * and free its entry in the socket table. And because of a engineering
+       * design issue, the error is not propagated back so we don't get an
+       * error at this point. So before we continue, make sure the channel is
+       * open and if not just ignore it. See #23751. */
+      if (!CHANNEL_IS_OPEN(chan)) {
+        /* Channel isn't open so we put it back in IDLE mode. It is either
+         * renegotiating its TLS session or about to be released. */
+        scheduler_set_channel_state(chan, SCHED_CHAN_IDLE);
+        continue;
+      }
       /* flush_result has the # cells flushed */
       if (flush_result > 0) {
         update_socket_written(&socket_table, chan, flush_result *
@@ -610,12 +636,12 @@ kist_scheduler_run(void)
         log_debug(LD_SCHED,
                  "We didn't flush anything on a chan that we think "
                  "can write and wants to write. The channel's state is '%s' "
-                 "and in scheduler state %d. We're going to mark it as "
+                 "and in scheduler state '%s'. We're going to mark it as "
                  "waiting_for_cells (as that's most likely the issue) and "
                  "stop scheduling it this round.",
                  channel_state_to_string(chan->state),
-                 chan->scheduler_state);
-        chan->scheduler_state = SCHED_CHAN_WAITING_FOR_CELLS;
+                 get_scheduler_state_string(chan->scheduler_state));
+        scheduler_set_channel_state(chan, SCHED_CHAN_WAITING_FOR_CELLS);
         continue;
       }
     }
@@ -642,16 +668,12 @@ kist_scheduler_run(void)
        * SCHED_CHAN_WAITING_FOR_CELLS to SCHED_CHAN_IDLE and seeing if Tor
        * starts having serious throughput issues. Best done in shadow/chutney.
        */
-      chan->scheduler_state = SCHED_CHAN_WAITING_FOR_CELLS;
-      log_debug(LD_SCHED, "chan=%" PRIu64 " now waiting_for_cells",
-                chan->global_identifier);
+      scheduler_set_channel_state(chan, SCHED_CHAN_WAITING_FOR_CELLS);
     } else if (!channel_more_to_flush(chan)) {
 
       /* Case 2: no more cells to send, but still open for writes */
 
-      chan->scheduler_state = SCHED_CHAN_WAITING_FOR_CELLS;
-      log_debug(LD_SCHED, "chan=%" PRIu64 " now waiting_for_cells",
-                chan->global_identifier);
+      scheduler_set_channel_state(chan, SCHED_CHAN_WAITING_FOR_CELLS);
     } else if (!socket_can_write(&socket_table, chan)) {
 
       /* Case 3: cells to send, but cannot write */
@@ -663,20 +685,19 @@ kist_scheduler_run(void)
        * after the scheduling loop is over. They can hopefully be taken care of
        * in the next scheduling round.
        */
-      chan->scheduler_state = SCHED_CHAN_WAITING_TO_WRITE;
       if (!to_readd) {
         to_readd = smartlist_new();
       }
       smartlist_add(to_readd, chan);
-      log_debug(LD_SCHED, "chan=%" PRIu64 " now waiting_to_write",
-                chan->global_identifier);
     } else {
 
       /* Case 4: cells to send, and still open for writes */
 
-      chan->scheduler_state = SCHED_CHAN_PENDING;
-      smartlist_pqueue_add(cp, scheduler_compare_channels,
-                           offsetof(channel_t, sched_heap_idx), chan);
+      scheduler_set_channel_state(chan, SCHED_CHAN_PENDING);
+      if (!SCHED_BUG(chan->sched_heap_idx != -1, chan)) {
+        smartlist_pqueue_add(cp, scheduler_compare_channels,
+                             offsetof(channel_t, sched_heap_idx), chan);
+      }
     }
   } /* End of main scheduling loop */
 
@@ -694,10 +715,15 @@ kist_scheduler_run(void)
   /* Re-add any channels we need to */
   if (to_readd) {
     SMARTLIST_FOREACH_BEGIN(to_readd, channel_t *, readd_chan) {
-      readd_chan->scheduler_state = SCHED_CHAN_PENDING;
+      scheduler_set_channel_state(readd_chan, SCHED_CHAN_PENDING);
       if (!smartlist_contains(cp, readd_chan)) {
-        smartlist_pqueue_add(cp, scheduler_compare_channels,
+        if (!SCHED_BUG(chan->sched_heap_idx != -1, chan)) {
+          /* XXXX Note that the check above is in theory redundant with
+           * the smartlist_contains check.  But let's make sure we're
+           * not messing anything up, and leave them both for now. */
+          smartlist_pqueue_add(cp, scheduler_compare_channels,
                              offsetof(channel_t, sched_heap_idx), readd_chan);
+        }
       }
     } SMARTLIST_FOREACH_END(readd_chan);
     smartlist_free(to_readd);
@@ -714,7 +740,7 @@ kist_scheduler_run(void)
 static scheduler_t kist_scheduler = {
   .type = SCHEDULER_KIST,
   .free_all = kist_free_all,
-  .on_channel_free = kist_on_channel_free,
+  .on_channel_free = kist_on_channel_free_fn,
   .init = kist_scheduler_init,
   .on_new_consensus = kist_scheduler_on_new_consensus,
   .schedule = kist_scheduler_schedule,
@@ -740,7 +766,7 @@ get_kist_scheduler(void)
  *   - If consensus doesn't say anything, return 10 milliseconds, default.
  */
 int
-kist_scheduler_run_interval(const networkstatus_t *ns)
+kist_scheduler_run_interval(void)
 {
   int run_interval = get_options()->KISTSchedRunInterval;
 
@@ -754,7 +780,7 @@ kist_scheduler_run_interval(const networkstatus_t *ns)
 
   /* Will either be the consensus value or the default. Note that 0 can be
    * returned which means the consensus wants us to NOT use KIST. */
-  return networkstatus_get_param(ns, "KISTSchedRunInterval",
+  return networkstatus_get_param(NULL, "KISTSchedRunInterval",
                                  KIST_SCHED_RUN_INTERVAL_DEFAULT,
                                  KIST_SCHED_RUN_INTERVAL_MIN,
                                  KIST_SCHED_RUN_INTERVAL_MAX);
@@ -793,7 +819,7 @@ scheduler_can_use_kist(void)
 
   /* We do have the support, time to check if we can get the interval that the
    * consensus can be disabling. */
-  int run_interval = kist_scheduler_run_interval(NULL);
+  int run_interval = kist_scheduler_run_interval();
   log_debug(LD_SCHED, "Determined KIST sched_run_interval should be "
                       "%" PRId32 ". Can%s use KIST.",
            run_interval, (run_interval > 0 ? "" : " not"));

@@ -79,7 +79,7 @@ consensus_cache_open(const char *subdir, int max_entries)
 {
   int storagedir_max_entries;
   consensus_cache_t *cache = tor_malloc_zero(sizeof(consensus_cache_t));
-  char *directory = get_datadir_fname(subdir);
+  char *directory = get_cachedir_fname(subdir);
   cache->max_entries = max_entries;
 
 #ifdef MUST_UNMAP_TO_UNLINK
@@ -170,7 +170,7 @@ consensus_cache_clear(consensus_cache_t *cache)
  * Drop all storage held by <b>cache</b>.
  */
 void
-consensus_cache_free(consensus_cache_t *cache)
+consensus_cache_free_(consensus_cache_t *cache)
 {
   if (! cache)
     return;
@@ -539,9 +539,20 @@ consensus_cache_rescan(consensus_cache_t *cache)
     map = storage_dir_map_labeled(cache->dir, fname,
                                   &labels, &body, &bodylen);
     if (! map) {
-      /* Can't load this; continue */
-      log_warn(LD_FS, "Unable to map file %s from consensus cache: %s",
-               escaped(fname), strerror(errno));
+      /* The ERANGE error might come from tor_mmap_file() -- it means the file
+       * was empty. EINVAL might come from ..map_labeled() -- it means the
+       * file was misformatted. In both cases, we should just delete it.
+       */
+      if (errno == ERANGE || errno == EINVAL) {
+        log_warn(LD_FS, "Found %s file %s in consensus cache; removing it.",
+                 errno == ERANGE ? "empty" : "misformatted",
+                 escaped(fname));
+        storage_dir_remove_file(cache->dir, fname);
+      } else {
+        /* Can't load this; continue */
+        log_warn(LD_FS, "Unable to map file %s from consensus cache: %s",
+                 escaped(fname), strerror(errno));
+      }
       continue;
     }
     consensus_cache_entry_t *ent =

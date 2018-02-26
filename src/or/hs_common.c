@@ -22,12 +22,12 @@
 #include "hs_client.h"
 #include "hs_ident.h"
 #include "hs_service.h"
+#include "hs_circuitmap.h"
 #include "policies.h"
 #include "rendcommon.h"
 #include "rendservice.h"
 #include "routerset.h"
 #include "router.h"
-#include "routerset.h"
 #include "shared_random.h"
 #include "shared_random_state.h"
 
@@ -209,6 +209,23 @@ hs_check_service_private_dir(const char *username, const char *path,
   return 0;
 }
 
+/* Default, minimum, and maximum values for the maximum rendezvous failures
+ * consensus parameter. */
+#define MAX_REND_FAILURES_DEFAULT 2
+#define MAX_REND_FAILURES_MIN 1
+#define MAX_REND_FAILURES_MAX 10
+
+/** How many times will a hidden service operator attempt to connect to
+ * a requested rendezvous point before giving up? */
+int
+hs_get_service_max_rend_failures(void)
+{
+  return networkstatus_get_param(NULL, "hs_service_max_rdv_failures",
+                                 MAX_REND_FAILURES_DEFAULT,
+                                 MAX_REND_FAILURES_MIN,
+                                 MAX_REND_FAILURES_MAX);
+}
+
 /** Get the default HS time period length in minutes from the consensus. */
 STATIC uint64_t
 get_time_period_length(void)
@@ -224,7 +241,7 @@ get_time_period_length(void)
     return sr_state_get_protocol_run_duration() / 60;
   }
 
-  int32_t time_period_length = networkstatus_get_param(NULL, "hsdir-interval",
+  int32_t time_period_length = networkstatus_get_param(NULL, "hsdir_interval",
                                              HS_TIME_PERIOD_LENGTH_DEFAULT,
                                              HS_TIME_PERIOD_LENGTH_MIN,
                                              HS_TIME_PERIOD_LENGTH_MAX);
@@ -329,7 +346,7 @@ rend_data_alloc(uint32_t version)
 
 /** Free all storage associated with <b>data</b> */
 void
-rend_data_free(rend_data_t *data)
+rend_data_free_(rend_data_t *data)
 {
   if (!data) {
     return;
@@ -983,18 +1000,18 @@ hs_build_address(const ed25519_public_key_t *key, uint8_t version,
 link_specifier_t *
 hs_link_specifier_dup(const link_specifier_t *lspec)
 {
-  link_specifier_t *dup = link_specifier_new();
-  memcpy(dup, lspec, sizeof(*dup));
+  link_specifier_t *result = link_specifier_new();
+  memcpy(result, lspec, sizeof(*result));
   /* The unrecognized field is a dynamic array so make sure to copy its
    * content and not the pointer. */
   link_specifier_setlen_un_unrecognized(
-                        dup, link_specifier_getlen_un_unrecognized(lspec));
-  if (link_specifier_getlen_un_unrecognized(dup)) {
-    memcpy(link_specifier_getarray_un_unrecognized(dup),
+                  result, link_specifier_getlen_un_unrecognized(lspec));
+  if (link_specifier_getlen_un_unrecognized(result)) {
+    memcpy(link_specifier_getarray_un_unrecognized(result),
            link_specifier_getconstarray_un_unrecognized(lspec),
-           link_specifier_getlen_un_unrecognized(dup));
+           link_specifier_getlen_un_unrecognized(result));
   }
-  return dup;
+  return result;
 }
 
 /* From a given ed25519 public key pk and an optional secret, compute a
@@ -1638,24 +1655,22 @@ hs_pick_hsdir(smartlist_t *responsible_dirs, const char *req_key_str)
 
 /* From a list of link specifier, an onion key and if we are requesting a
  * direct connection (ex: single onion service), return a newly allocated
- * extend_info_t object. This function checks the firewall policies and if we
- * are allowed to extend to the chosen address.
+ * extend_info_t object. This function always returns an extend info with
+ * an IPv4 address, or NULL.
  *
- *  if either IPv4 or legacy ID is missing, error.
- *  if not direct_conn, IPv4 is prefered.
- *  if direct_conn, IPv6 is prefered if we have one available.
- *  if firewall does not allow the chosen address, error.
- *
- * Return NULL if we can fulfill the conditions. */
+ * It performs the following checks:
+ *  if either IPv4 or legacy ID is missing, return NULL.
+ *  if direct_conn, and we can't reach the IPv4 address, return NULL.
+ */
 extend_info_t *
 hs_get_extend_info_from_lspecs(const smartlist_t *lspecs,
                                const curve25519_public_key_t *onion_key,
                                int direct_conn)
 {
-  int have_v4 = 0, have_v6 = 0, have_legacy_id = 0, have_ed25519_id = 0;
+  int have_v4 = 0, have_legacy_id = 0, have_ed25519_id = 0;
   char legacy_id[DIGEST_LEN] = {0};
-  uint16_t port_v4 = 0, port_v6 = 0, port = 0;
-  tor_addr_t addr_v4, addr_v6, *addr = NULL;
+  uint16_t port_v4 = 0;
+  tor_addr_t addr_v4;
   ed25519_public_key_t ed25519_pk;
   extend_info_t *info = NULL;
 
@@ -1670,14 +1685,6 @@ hs_get_extend_info_from_lspecs(const smartlist_t *lspecs,
                           link_specifier_get_un_ipv4_addr(ls));
       port_v4 = link_specifier_get_un_ipv4_port(ls);
       have_v4 = 1;
-      break;
-    case LS_IPV6:
-      /* Skip if we already seen a v6. */
-      if (have_v6) continue;
-      tor_addr_from_ipv6_bytes(&addr_v6,
-          (const char *) link_specifier_getconstarray_un_ipv6_addr(ls));
-      port_v6 = link_specifier_get_un_ipv6_port(ls);
-      have_v6 = 1;
       break;
     case LS_LEGACY_ID:
       /* Make sure we do have enough bytes for the legacy ID. */
@@ -1700,55 +1707,45 @@ hs_get_extend_info_from_lspecs(const smartlist_t *lspecs,
     }
   } SMARTLIST_FOREACH_END(ls);
 
-  /* IPv4 and legacy ID are mandatory. */
+  /* Legacy ID is mandatory, and we require IPv4. */
   if (!have_v4 || !have_legacy_id) {
     goto done;
   }
-  /* By default, we pick IPv4 but this might change to v6 if certain
-   * conditions are met. */
-  addr = &addr_v4; port = port_v4;
 
-  /* If we are NOT in a direct connection, we'll use our Guard and a 3-hop
-   * circuit so we can't extend in IPv6. And at this point, we do have an IPv4
-   * address available so go to validation. */
+  /* We know we have IPv4, because we just checked. */
   if (!direct_conn) {
+    /* All clients can extend to any IPv4 via a 3-hop path. */
     goto validate;
-  }
-
-  /* From this point on, we have a request for a direct connection to the
-   * rendezvous point so make sure we can actually connect through our
-   * firewall. We'll prefer IPv6. */
-
-  /* IPv6 test. */
-  if (have_v6 &&
-      fascist_firewall_allows_address_addr(&addr_v6, port_v6,
-                                           FIREWALL_OR_CONNECTION, 1, 1)) {
-    /* Direct connection and we can reach it in IPv6 so go for it. */
-    addr = &addr_v6; port = port_v6;
-    goto validate;
-  }
-  /* IPv4 test and we are sure we have a v4 because of the check above. */
-  if (fascist_firewall_allows_address_addr(&addr_v4, port_v4,
-                                           FIREWALL_OR_CONNECTION, 0, 0)) {
+  } else if (direct_conn &&
+             fascist_firewall_allows_address_addr(&addr_v4, port_v4,
+                                                  FIREWALL_OR_CONNECTION,
+                                                  0, 0)) {
     /* Direct connection and we can reach it in IPv4 so go for it. */
-    addr = &addr_v4; port = port_v4;
     goto validate;
+
+    /* We will add support for falling back to a 3-hop path in a later
+     * release. */
+  } else {
+    /* If we can't reach IPv4, return NULL. */
+    goto done;
   }
+
+  /* We will add support for IPv6 in a later release. */
 
  validate:
   /* We'll validate now that the address we've picked isn't a private one. If
    * it is, are we allowing to extend to private address? */
-  if (!extend_info_addr_is_allowed(addr)) {
-    log_warn(LD_REND, "Requested address is private and it is not "
-                      "allowed to extend to it: %s:%u",
-             fmt_addr(&addr_v4), port_v4);
+  if (!extend_info_addr_is_allowed(&addr_v4)) {
+    log_fn(LOG_PROTOCOL_WARN, LD_REND,
+           "Requested address is private and we are not allowed to extend to "
+           "it: %s:%u", fmt_addr(&addr_v4), port_v4);
     goto done;
   }
 
   /* We do have everything for which we think we can connect successfully. */
   info = extend_info_new(NULL, legacy_id,
                          (have_ed25519_id) ? &ed25519_pk : NULL, NULL,
-                         onion_key, addr, port);
+                         onion_key, &addr_v4, port_v4);
  done:
   return info;
 }

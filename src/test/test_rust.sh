@@ -1,13 +1,20 @@
 #!/bin/sh
-# Test all the Rust crates we're using
+# Test all Rust crates
 
-crates=tor_util
+crates="protover tor_util smartlist tor_allocate"
 
 exitcode=0
 
+set -e
+
 for crate in $crates; do
-    cd "${abs_top_srcdir:-.}/src/rust/${crate}"
-    CARGO_TARGET_DIR="${abs_top_builddir}/src/rust/target" CARGO_HOME="${abs_top_builddir}/src/rust" "${CARGO:-cargo}" test ${CARGO_ONLINE-"--frozen"} || exitcode=1
+    cd "${abs_top_builddir:-../../..}/src/rust"
+    CARGO_TARGET_DIR="${abs_top_builddir:-../../..}/src/rust/target" \
+      CARGO_HOME="${abs_top_builddir:-../../..}/src/rust" \
+      "${CARGO:-cargo}" test ${CARGO_ONLINE-"--frozen"} \
+      --manifest-path "${abs_top_srcdir:-.}/src/rust/${crate}/Cargo.toml" \
+	|| exitcode=1
+    cd -
 done
 
 exit $exitcode

@@ -220,9 +220,10 @@ struct guard_selection_s {
   guard_selection_type_t type;
 
   /**
-   * A value of 1 means that primary_entry_guards is up-to-date; 0
-   * means we need to recalculate it before using primary_entry_guards
-   * or the is_primary flag on any guard.
+   * A value of 1 means that primary_entry_guards is up-to-date with respect to
+   * the consensus and status info that we currently have; 0 means we need to
+   * recalculate it before using primary_entry_guards or the is_primary flag on
+   * any guard.
    */
   int primary_guards_up_to_date;
 
@@ -272,22 +273,28 @@ struct guard_selection_s {
 
 struct entry_guard_handle_t;
 
+/** Types of restrictions we impose when picking guard nodes */
+typedef enum guard_restriction_type_t {
+  /* Don't pick the same guard node as our exit node (or its family) */
+  RST_EXIT_NODE = 0,
+  /* Don't pick dirguards that have previously shown to be outdated */
+  RST_OUTDATED_MD_DIRSERVER = 1
+} guard_restriction_type_t;
+
 /**
  * A restriction to remember which entry guards are off-limits for a given
  * circuit.
- *
- * Right now, we only use restrictions to block a single guard and its family
- * from being selected; this mechanism is designed to be more extensible in
- * the future, however.
  *
  * Note: This mechanism is NOT for recording which guards are never to be
  * used: only which guards cannot be used on <em>one particular circuit</em>.
  */
 struct entry_guard_restriction_t {
-  /**
-   * The guard's RSA identity digest must not equal this; and it must not
-   * be in the same family as any node with this digest.
-   */
+  /* What type of restriction are we imposing? */
+  guard_restriction_type_t type;
+
+  /* In case of restriction type RST_EXIT_NODE, the guard's RSA identity
+   * digest must not equal this; and it must not be in the same family as any
+   * node with this digest. */
   uint8_t exclude_id[DIGEST_LEN];
 };
 
@@ -316,7 +323,8 @@ struct circuit_guard_state_t {
 int guards_update_all(void);
 const node_t *guards_choose_guard(cpath_build_state_t *state,
                                   circuit_guard_state_t **guard_state_out);
-const node_t *guards_choose_dirguard(circuit_guard_state_t **guard_state_out);
+const node_t *guards_choose_dirguard(uint8_t dir_purpose,
+                                     circuit_guard_state_t **guard_state_out);
 
 #if 1
 /* XXXX NM I would prefer that all of this stuff be private to
@@ -349,7 +357,10 @@ typedef enum {
   GUARD_USAGE_DIRGUARD = 1
 } guard_usage_t;
 
-void circuit_guard_state_free(circuit_guard_state_t *state);
+#define circuit_guard_state_free(val) \
+  FREE_AND_NULL(circuit_guard_state_t, circuit_guard_state_free_, (val))
+
+void circuit_guard_state_free_(circuit_guard_state_t *state);
 int entry_guard_pick_for_circuit(guard_selection_t *gs,
                                  guard_usage_t usage,
                                  entry_guard_restriction_t *rst,
@@ -376,8 +387,9 @@ void entry_guards_note_internet_connectivity(guard_selection_t *gs);
 
 int update_guard_selection_choice(const or_options_t *options);
 
-/* Used by bridges.c only. */
-int num_bridges_usable(void);
+int entry_guard_could_succeed(const circuit_guard_state_t *guard_state);
+
+MOCK_DECL(int,num_bridges_usable,(int use_maybe_reachable));
 
 #ifdef ENTRYNODES_PRIVATE
 /**
@@ -469,6 +481,9 @@ STATIC double get_meaningful_restriction_threshold(void);
 STATIC double get_extreme_restriction_threshold(void);
 
 HANDLE_DECL(entry_guard, entry_guard_t, STATIC)
+#define entry_guard_handle_free(h)    \
+  FREE_AND_NULL(entry_guard_handle_t, entry_guard_handle_free_, (h))
+
 STATIC guard_selection_type_t guard_selection_infer_type(
                            guard_selection_type_t type_in,
                            const char *name);
@@ -476,7 +491,9 @@ STATIC guard_selection_t *guard_selection_new(const char *name,
                                               guard_selection_type_t type);
 STATIC guard_selection_t *get_guard_selection_by_name(
           const char *name, guard_selection_type_t type, int create_if_absent);
-STATIC void guard_selection_free(guard_selection_t *gs);
+STATIC void guard_selection_free_(guard_selection_t *gs);
+#define guard_selection_free(gs) \
+  FREE_AND_NULL(guard_selection_t, guard_selection_free_, (gs))
 MOCK_DECL(STATIC int, entry_guard_is_listed,
           (guard_selection_t *gs, const entry_guard_t *guard));
 STATIC const char *choose_guard_selection(const or_options_t *options,
@@ -488,12 +505,18 @@ STATIC entry_guard_t *get_sampled_guard_with_id(guard_selection_t *gs,
 
 MOCK_DECL(STATIC time_t, randomize_time, (time_t now, time_t max_backdate));
 
+MOCK_DECL(STATIC circuit_guard_state_t *,
+          circuit_guard_state_new,(entry_guard_t *guard, unsigned state,
+                                   entry_guard_restriction_t *rst));
+
 STATIC entry_guard_t *entry_guard_add_to_sample(guard_selection_t *gs,
                                                 const node_t *node);
 STATIC entry_guard_t *entry_guards_expand_sample(guard_selection_t *gs);
 STATIC char *entry_guard_encode_for_state(entry_guard_t *guard);
 STATIC entry_guard_t *entry_guard_parse_from_state(const char *s);
-STATIC void entry_guard_free(entry_guard_t *e);
+#define entry_guard_free(e) \
+  FREE_AND_NULL(entry_guard_t, entry_guard_free_, (e))
+STATIC void entry_guard_free_(entry_guard_t *e);
 STATIC void entry_guards_update_filtered_sets(guard_selection_t *gs);
 STATIC int entry_guards_all_primary_guards_are_down(guard_selection_t *gs);
 /**
@@ -514,7 +537,7 @@ STATIC void entry_guard_consider_retry(entry_guard_t *guard);
 STATIC void make_guard_confirmed(guard_selection_t *gs, entry_guard_t *guard);
 STATIC void entry_guards_update_confirmed(guard_selection_t *gs);
 STATIC void entry_guards_update_primary(guard_selection_t *gs);
-STATIC int num_reachable_filtered_guards(guard_selection_t *gs,
+STATIC int num_reachable_filtered_guards(const guard_selection_t *gs,
                                          const entry_guard_restriction_t *rst);
 STATIC void sampled_guards_update_from_consensus(guard_selection_t *gs);
 /**
@@ -550,6 +573,17 @@ STATIC unsigned entry_guards_note_guard_success(guard_selection_t *gs,
                                                 unsigned old_state);
 STATIC int entry_guard_has_higher_priority(entry_guard_t *a, entry_guard_t *b);
 STATIC char *getinfo_helper_format_single_entry_guard(const entry_guard_t *e);
+
+STATIC entry_guard_restriction_t *guard_create_exit_restriction(
+                                                      const uint8_t *exit_id);
+
+STATIC entry_guard_restriction_t *guard_create_dirserver_md_restriction(void);
+
+STATIC void entry_guard_restriction_free_(entry_guard_restriction_t *rst);
+#define entry_guard_restriction_free(rst)  \
+  FREE_AND_NULL(entry_guard_restriction_t, \
+                entry_guard_restriction_free_, (rst))
+
 #endif /* defined(ENTRYNODES_PRIVATE) */
 
 void remove_all_entry_guards_for_guard_selection(guard_selection_t *gs);

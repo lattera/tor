@@ -17,10 +17,10 @@
 #include "hs_descriptor.h"
 #include "hs_cache.h"
 #include "hs_cell.h"
-#include "hs_ident.h"
 #include "config.h"
 #include "directory.h"
 #include "hs_client.h"
+#include "hs_control.h"
 #include "router.h"
 #include "routerset.h"
 #include "circuitlist.h"
@@ -28,7 +28,6 @@
 #include "connection.h"
 #include "nodelist.h"
 #include "circpathbias.h"
-#include "connection.h"
 #include "hs_ntor.h"
 #include "circuitbuild.h"
 #include "networkstatus.h"
@@ -233,6 +232,55 @@ close_all_socks_conns_waiting_for_desc(const ed25519_public_key_t *identity_pk,
   smartlist_free(conns);
 }
 
+/* Find all pending SOCKS connection waiting for a descriptor and retry them
+ * all. This is called when the directory information changed. */
+static void
+retry_all_socks_conn_waiting_for_desc(void)
+{
+  smartlist_t *conns =
+    connection_list_by_type_state(CONN_TYPE_AP, AP_CONN_STATE_RENDDESC_WAIT);
+
+  SMARTLIST_FOREACH_BEGIN(conns, connection_t *, base_conn) {
+    hs_client_fetch_status_t status;
+    const edge_connection_t *edge_conn =
+      ENTRY_TO_EDGE_CONN(TO_ENTRY_CONN(base_conn));
+
+    /* Ignore non HS or non v3 connection. */
+    if (edge_conn->hs_ident == NULL) {
+      continue;
+    }
+    /* In this loop, we will possibly try to fetch a descriptor for the
+     * pending connections because we just got more directory information.
+     * However, the refetch process can cleanup all SOCKS request so the same
+     * service if an internal error happens. Thus, we can end up with closed
+     * connections in our list. */
+    if (base_conn->marked_for_close) {
+      continue;
+    }
+
+    /* XXX: There is an optimization we could do which is that for a service
+     * key, we could check if we can fetch and remember that decision. */
+
+    /* Order a refetch in case it works this time. */
+    status = hs_client_refetch_hsdesc(&edge_conn->hs_ident->identity_pk);
+    if (BUG(status == HS_CLIENT_FETCH_HAVE_DESC)) {
+      /* This case is unique because it can NOT happen in theory. Once we get
+       * a new descriptor, the HS client subsystem is notified immediately and
+       * the connections waiting for it are handled which means the state will
+       * change from renddesc wait state. Log this and continue to next
+       * connection. */
+      continue;
+    }
+    /* In the case of an error, either all SOCKS connections have been
+     * closed or we are still missing directory information. Leave the
+     * connection in renddesc wait state so when we get more info, we'll be
+     * able to try it again. */
+  } SMARTLIST_FOREACH_END(base_conn);
+
+  /* We don't have ownership of those objects. */
+  smartlist_free(conns);
+}
+
 /* A v3 HS circuit successfully connected to the hidden service. Update the
  * stream state at <b>hs_conn_ident</b> appropriately. */
 static void
@@ -299,6 +347,10 @@ directory_launch_v3_desc_fetch(const ed25519_public_key_t *onion_identity_pk,
            safe_str_client(ed25519_fmt(onion_identity_pk)),
            safe_str_client(base64_blinded_pubkey),
            safe_str_client(routerstatus_describe(hsdir)));
+
+  /* Fire a REQUESTED event on the control port. */
+  hs_control_desc_event_requested(onion_identity_pk, base64_blinded_pubkey,
+                                  hsdir);
 
   /* Cleanup memory. */
   memwipe(&blinded_pubkey, 0, sizeof(blinded_pubkey));
@@ -662,7 +714,7 @@ desc_intro_point_to_extend_info(const hs_desc_intro_point_t *ip)
     smartlist_add(lspecs, lspec);
   } SMARTLIST_FOREACH_END(desc_lspec);
 
-  /* Explicitely put the direct connection option to 0 because this is client
+  /* Explicitly put the direct connection option to 0 because this is client
    * side and there is no such thing as a non anonymous client. */
   ei = hs_get_extend_info_from_lspecs(lspecs, &ip->onion_key, 0);
 
@@ -727,15 +779,24 @@ client_get_random_intro(const ed25519_public_key_t *service_pk)
   const hs_descriptor_t *desc;
   const hs_desc_encrypted_data_t *enc_data;
   const or_options_t *options = get_options();
+  /* Calculate the onion address for logging purposes */
+  char onion_address[HS_SERVICE_ADDR_LEN_BASE32 + 1];
 
   tor_assert(service_pk);
 
   desc = hs_cache_lookup_as_client(service_pk);
+  /* Assume the service is v3 if the descriptor is missing. This is ok,
+   * because we only use the address in log messages */
+  hs_build_address(service_pk,
+                   desc ? desc->plaintext_data.version : HS_VERSION_THREE,
+                   onion_address);
   if (desc == NULL || !hs_client_any_intro_points_usable(service_pk,
                                                          desc)) {
     log_info(LD_REND, "Unable to randomly select an introduction point "
-                      "because descriptor %s.",
-             (desc) ? "doesn't have usable intro point" : "is missing");
+             "for service %s because descriptor %s. We can't connect.",
+             safe_str_client(onion_address),
+             (desc) ? "doesn't have any usable intro points"
+                    : "is missing (assuming v3 onion address)");
     goto end;
   }
 
@@ -763,6 +824,10 @@ client_get_random_intro(const ed25519_public_key_t *service_pk)
     if (ei == NULL) {
       /* We can get here for instance if the intro point is a private address
        * and we aren't allowed to extend to those. */
+      log_info(LD_REND, "Unable to select introduction point with auth key %s "
+               "for service %s, because we could not extend to it.",
+               safe_str_client(ed25519_fmt(&ip->auth_key_cert->signed_key)),
+               safe_str_client(onion_address));
       continue;
     }
 
@@ -791,14 +856,20 @@ client_get_random_intro(const ed25519_public_key_t *service_pk)
    * set, we are forced to not use anything. */
   ei = ei_excluded;
   if (options->StrictNodes) {
-    log_warn(LD_REND, "Every introduction points are in the ExcludeNodes set "
-             "and StrictNodes is set. We can't connect.");
+    log_warn(LD_REND, "Every introduction point for service %s is in the "
+             "ExcludeNodes set and StrictNodes is set. We can't connect.",
+             safe_str_client(onion_address));
     extend_info_free(ei);
     ei = NULL;
+  } else {
+    log_fn(LOG_PROTOCOL_WARN, LD_REND, "Every introduction point for service "
+           "%s is unusable or we can't extend to it. We can't connect.",
+           safe_str_client(onion_address));
   }
 
  end:
   smartlist_free(usable_ips);
+  memwipe(onion_address, 0, sizeof(onion_address));
   return ei;
 }
 
@@ -872,7 +943,8 @@ handle_introduce_ack_success(origin_circuit_t *intro_circ)
 
   /* Get the rendezvous circuit for this rendezvous cookie. */
   uint8_t *rendezvous_cookie = intro_circ->hs_ident->rendezvous_cookie;
-  rend_circ = hs_circuitmap_get_rend_circ_client_side(rendezvous_cookie);
+  rend_circ =
+  hs_circuitmap_get_established_rend_circ_client_side(rendezvous_cookie);
   if (rend_circ == NULL) {
     log_warn(LD_REND, "Can't find any rendezvous circuit. Stopping");
     goto end;
@@ -1029,6 +1101,73 @@ handle_rendezvous2(origin_circuit_t *circ, const uint8_t *payload,
   return ret;
 }
 
+/* Return true iff the client can fetch a descriptor for this service public
+ * identity key and status_out if not NULL is untouched. If the client can
+ * _not_ fetch the descriptor and if status_out is not NULL, it is set with
+ * the fetch status code. */
+static unsigned int
+can_client_refetch_desc(const ed25519_public_key_t *identity_pk,
+                        hs_client_fetch_status_t *status_out)
+{
+  hs_client_fetch_status_t status;
+
+  tor_assert(identity_pk);
+
+  /* Are we configured to fetch descriptors? */
+  if (!get_options()->FetchHidServDescriptors) {
+    log_warn(LD_REND, "We received an onion address for a hidden service "
+                      "descriptor but we are configured to not fetch.");
+    status = HS_CLIENT_FETCH_NOT_ALLOWED;
+    goto cannot;
+  }
+
+  /* Without a live consensus we can't do any client actions. It is needed to
+   * compute the hashring for a service. */
+  if (!networkstatus_get_live_consensus(approx_time())) {
+    log_info(LD_REND, "Can't fetch descriptor for service %s because we "
+                      "are missing a live consensus. Stalling connection.",
+             safe_str_client(ed25519_fmt(identity_pk)));
+    status = HS_CLIENT_FETCH_MISSING_INFO;
+    goto cannot;
+  }
+
+  if (!router_have_minimum_dir_info()) {
+    log_info(LD_REND, "Can't fetch descriptor for service %s because we "
+                      "dont have enough descriptors. Stalling connection.",
+             safe_str_client(ed25519_fmt(identity_pk)));
+    status = HS_CLIENT_FETCH_MISSING_INFO;
+    goto cannot;
+  }
+
+  /* Check if fetching a desc for this HS is useful to us right now */
+  {
+    const hs_descriptor_t *cached_desc = NULL;
+    cached_desc = hs_cache_lookup_as_client(identity_pk);
+    if (cached_desc && hs_client_any_intro_points_usable(identity_pk,
+                                                         cached_desc)) {
+      log_info(LD_GENERAL, "We would fetch a v3 hidden service descriptor "
+                           "but we already have a usable descriptor.");
+      status = HS_CLIENT_FETCH_HAVE_DESC;
+      goto cannot;
+    }
+  }
+
+  /* Don't try to refetch while we have a pending request for it. */
+  if (directory_request_is_pending(identity_pk)) {
+    log_info(LD_REND, "Already a pending directory request. Waiting on it.");
+    status = HS_CLIENT_FETCH_PENDING;
+    goto cannot;
+  }
+
+  /* Yes, client can fetch! */
+  return 1;
+ cannot:
+  if (status_out) {
+    *status_out = status;
+  }
+  return 0;
+}
+
 /* ========== */
 /* Public API */
 /* ========== */
@@ -1094,10 +1233,12 @@ hs_client_decode_descriptor(const char *desc_str,
   /* Make sure the descriptor signing key cross certifies with the computed
    * blinded key. Without this validation, anyone knowing the subcredential
    * and onion address can forge a descriptor. */
-  if (tor_cert_checksig((*desc)->plaintext_data.signing_key_cert,
+  tor_cert_t *cert = (*desc)->plaintext_data.signing_key_cert;
+  if (tor_cert_checksig(cert,
                         &blinded_pubkey, approx_time()) < 0) {
     log_warn(LD_GENERAL, "Descriptor signing key certificate signature "
-                         "doesn't validate with computed blinded key.");
+             "doesn't validate with computed blinded key: %s",
+             tor_cert_describe_signature_status(cert));
     goto err;
   }
 
@@ -1134,62 +1275,25 @@ hs_client_any_intro_points_usable(const ed25519_public_key_t *service_pk,
 int
 hs_client_refetch_hsdesc(const ed25519_public_key_t *identity_pk)
 {
-  int ret;
+  hs_client_fetch_status_t status;
 
   tor_assert(identity_pk);
 
-  /* Are we configured to fetch descriptors? */
-  if (!get_options()->FetchHidServDescriptors) {
-    log_warn(LD_REND, "We received an onion address for a hidden service "
-                      "descriptor but we are configured to not fetch.");
-    return HS_CLIENT_FETCH_NOT_ALLOWED;
+  if (!can_client_refetch_desc(identity_pk, &status)) {
+    return status;
   }
 
-  /* Without a live consensus we can't do any client actions. It is needed to
-   * compute the hashring for a service. */
-  if (!networkstatus_get_live_consensus(approx_time())) {
-    log_info(LD_REND, "Can't fetch descriptor for service %s because we "
-                      "are missing a live consensus. Stalling connection.",
-               safe_str_client(ed25519_fmt(identity_pk)));
-    return HS_CLIENT_FETCH_MISSING_INFO;
-  }
-
-  if (!router_have_minimum_dir_info()) {
-    log_info(LD_REND, "Can't fetch descriptor for service %s because we "
-                      "dont have enough descriptors. Stalling connection.",
-               safe_str_client(ed25519_fmt(identity_pk)));
-    return HS_CLIENT_FETCH_MISSING_INFO;
-  }
-
-  /* Check if fetching a desc for this HS is useful to us right now */
-  {
-    const hs_descriptor_t *cached_desc = NULL;
-    cached_desc = hs_cache_lookup_as_client(identity_pk);
-    if (cached_desc && hs_client_any_intro_points_usable(identity_pk,
-                                                         cached_desc)) {
-      log_info(LD_GENERAL, "We would fetch a v3 hidden service descriptor "
-                           "but we already have a usable descriptor.");
-      return HS_CLIENT_FETCH_HAVE_DESC;
-    }
-  }
-
-  /* Don't try to refetch while we have a pending request for it. */
-  if (directory_request_is_pending(identity_pk)) {
-    log_info(LD_REND, "Already a pending directory request. Waiting on it.");
-    return HS_CLIENT_FETCH_PENDING;
-  }
-
-  /* Try to fetch the desc and if we encounter an unrecoverable error, mark the
-   * desc as unavailable for now. */
-  ret = fetch_v3_desc(identity_pk);
-  if (fetch_status_should_close_socks(ret)) {
-    close_all_socks_conns_waiting_for_desc(identity_pk, ret,
+  /* Try to fetch the desc and if we encounter an unrecoverable error, mark
+   * the desc as unavailable for now. */
+  status = fetch_v3_desc(identity_pk);
+  if (fetch_status_should_close_socks(status)) {
+    close_all_socks_conns_waiting_for_desc(identity_pk, status,
                                            END_STREAM_REASON_RESOLVEFAILED);
     /* Remove HSDir fetch attempts so that we can retry later if the user
      * wants us to regardless of if we closed any connections. */
     purge_hid_serv_request(identity_pk);
   }
-  return ret;
+  return status;
 }
 
 /* This is called when we are trying to attach an AP connection to these
@@ -1333,8 +1437,8 @@ hs_client_desc_has_arrived(const hs_ident_dir_conn_t *ident)
      * connection is considered "fresh" and can continue without being closed
      * too early. */
     base_conn->timestamp_created = now;
-    base_conn->timestamp_lastread = now;
-    base_conn->timestamp_lastwritten = now;
+    base_conn->timestamp_last_read_allowed = now;
+    base_conn->timestamp_last_write_allowed = now;
     /* Change connection's state into waiting for a circuit. */
     base_conn->state = AP_CONN_STATE_CIRCUIT_WAIT;
 
@@ -1497,5 +1601,15 @@ hs_client_purge_state(void)
   hs_purge_last_hid_serv_requests();
 
   log_info(LD_REND, "Hidden service client state has been purged.");
+}
+
+/* Called when our directory information has changed. */
+void
+hs_client_dir_info_changed(void)
+{
+  /* We have possibly reached the minimum directory information or new
+   * consensus so retry all pending SOCKS connection in
+   * AP_CONN_STATE_RENDDESC_WAIT state in order to fetch the descriptor. */
+  retry_all_socks_conn_waiting_for_desc();
 }
 

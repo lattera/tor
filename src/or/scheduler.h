@@ -80,8 +80,7 @@ typedef struct scheduler_s {
    * (which might be new) will call this so it has the chance to react to the
    * new consensus too. If there's a consensus parameter that your scheduler
    * wants to keep an eye on, this is where you should check for it.  */
-  void (*on_new_consensus)(const networkstatus_t *old_c,
-                           const networkstatus_t *new_c);
+  void (*on_new_consensus)(void);
 
   /* (Optional) To be called when a channel is being freed. Sometimes channels
    * go away (for example: the relay on the other end is shutting down). If
@@ -119,8 +118,7 @@ typedef struct scheduler_s {
 void scheduler_init(void);
 void scheduler_free_all(void);
 void scheduler_conf_changed(void);
-void scheduler_notify_networkstatus_changed(const networkstatus_t *old_c,
-                                            const networkstatus_t *new_c);
+void scheduler_notify_networkstatus_changed(void);
 MOCK_DECL(void, scheduler_release_channel, (channel_t *chan));
 
 /*
@@ -143,6 +141,17 @@ MOCK_DECL(void, scheduler_channel_has_waiting_cells, (channel_t *chan));
 /*********************************
  * Defined in scheduler.c
  *********************************/
+
+void scheduler_set_channel_state(channel_t *chan, int new_state);
+const char *get_scheduler_state_string(int scheduler_state);
+
+/* Triggers a BUG() and extra information with chan if available. */
+#define SCHED_BUG(cond, chan) \
+  (PREDICT_UNLIKELY(cond) ? \
+   ((BUG(cond)) ? (scheduler_bug_occurred(chan), 1) : 0) : 0)
+
+void scheduler_bug_occurred(const channel_t *chan);
+
 smartlist_t *get_channels_pending(void);
 MOCK_DECL(int, scheduler_compare_channels,
           (const void *c1_v, const void *c2_v));
@@ -189,7 +198,7 @@ int scheduler_can_use_kist(void);
 void scheduler_kist_set_full_mode(void);
 void scheduler_kist_set_lite_mode(void);
 scheduler_t *get_kist_scheduler(void);
-int kist_scheduler_run_interval(const networkstatus_t *ns);
+int kist_scheduler_run_interval(void);
 
 #ifdef TOR_UNIT_TESTS
 extern int32_t sched_run_interval;

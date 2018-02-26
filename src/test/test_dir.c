@@ -567,7 +567,7 @@ test_dir_routerinfo_parsing(void *arg)
 static void
 routerinfo_free_wrapper_(void *arg)
 {
-  routerinfo_free(arg);
+  routerinfo_free_(arg);
 }
 
 static void
@@ -664,7 +664,7 @@ test_dir_extrainfo_parsing(void *arg)
   escaped(NULL);
   extrainfo_free(ei);
   routerinfo_free(ri);
-  digestmap_free((digestmap_t*)map, routerinfo_free_wrapper_);
+  digestmap_free_((digestmap_t*)map, routerinfo_free_wrapper_);
 }
 
 static void
@@ -760,7 +760,7 @@ test_dir_parse_router_list(void *arg)
   smartlist_free(chunks);
   routerinfo_free(ri);
   if (map) {
-    digestmap_free((digestmap_t*)map, routerinfo_free_wrapper_);
+    digestmap_free_((digestmap_t*)map, routerinfo_free_wrapper_);
     router_get_routerlist()->identity_map =
       (struct digest_ri_map_t*)digestmap_new();
   }
@@ -1270,7 +1270,7 @@ test_dir_versions(void *arg)
   tt_int_op(0,OP_EQ, tor_version_as_new_as(
                                            "Tor 0.2.9.9 (git-00)",
                                            "Tor 0.2.9.9 (git-01)"));
-  /* In #21278, we comapre without integer overflows.
+  /* In #21278, we compare without integer overflows.
    * But since #21450 limits version components to [0, INT32_MAX], it is no
    * longer possible to cause an integer overflow in tor_version_compare() */
   tt_int_op(0,OP_EQ, tor_version_as_new_as(
@@ -2379,6 +2379,7 @@ test_a_networkstatus(
   sign_skey_2 = crypto_pk_new();
   sign_skey_3 = crypto_pk_new();
   sign_skey_leg1 = pk_generate(4);
+  dirvote_recalculate_timing(get_options(), now);
   sr_state_init(0, 0);
 
   tt_assert(!crypto_pk_read_private_key_from_string(sign_skey_1,
@@ -4125,9 +4126,9 @@ download_status_random_backoff_helper(int min_delay, int max_delay)
   int increment = -1;
   int old_increment = -1;
   time_t current_time = time(NULL);
-  const int exponent = DIR_DEFAULT_RANDOM_MULTIPLIER + 1;
 
   /* Check the random backoff cases */
+  int n_attempts = 0;
   do {
     increment = download_status_schedule_get_delay(&dls_random,
                                                    NULL,
@@ -4147,40 +4148,16 @@ download_status_random_backoff_helper(int min_delay, int max_delay)
     /* Test */
     tt_int_op(increment, OP_GE, min_delay);
     tt_int_op(increment, OP_LE, max_delay);
-    if (dls_random.last_backoff_position == 0) {
-      /* regression tests for 17750
-       * Always use the minimum delay for the first increment */
-      tt_int_op(increment, OP_EQ, min_delay);
-    } else {
-      /* It's times like these I'd love a good saturating arithmetic
-       * implementation */
-      int min_inc = INT_MAX;
-      if (old_increment <= INT_MAX - 1) {
-        min_inc = old_increment + 1;
-      }
-
-      int max_inc = INT_MAX;
-      if (old_increment <= (INT_MAX - 1)/exponent) {
-        max_inc = (exponent * old_increment) + 1;
-      }
-
-      /* Regression test for 20534 and friends:
-       * increment must always increase after the first */
-      tt_int_op(increment, OP_GE, min_inc);
-      /* We at most quadruple, and always add one */
-      tt_int_op(increment, OP_LE, max_inc);
-    }
 
     /* Advance */
-    ++(dls_random.n_download_attempts);
-    ++(dls_random.n_download_failures);
+    if (dls_random.n_download_attempts < IMPOSSIBLE_TO_DOWNLOAD - 1) {
+      ++(dls_random.n_download_attempts);
+      ++(dls_random.n_download_failures);
+    }
 
     /* Try another maybe */
     old_increment = increment;
-    if (increment >= max_delay)
-      current_time += increment;
-
-  } while (increment < max_delay);
+  } while (increment < max_delay && ++n_attempts < 1000);
 
  done:
   return;
@@ -4205,6 +4182,38 @@ test_dir_download_status_random_backoff(void *arg)
   download_status_random_backoff_helper(1, 1);
   download_status_random_backoff_helper(0, INT_MAX);
   download_status_random_backoff_helper(INT_MAX/2, INT_MAX);
+}
+
+static void
+test_dir_download_status_random_backoff_ranges(void *arg)
+{
+  (void)arg;
+  int lo, hi;
+  next_random_exponential_delay_range(&lo, &hi, 0, 10);
+  tt_int_op(lo, OP_EQ, 10);
+  tt_int_op(hi, OP_EQ, 11);
+
+  next_random_exponential_delay_range(&lo, &hi, 6, 10);
+  tt_int_op(lo, OP_EQ, 10);
+  tt_int_op(hi, OP_EQ, 6*3);
+
+  next_random_exponential_delay_range(&lo, &hi, 13, 10);
+  tt_int_op(lo, OP_EQ, 10);
+  tt_int_op(hi, OP_EQ, 13 * 3);
+
+  next_random_exponential_delay_range(&lo, &hi, 37, 10);
+  tt_int_op(lo, OP_EQ, 10);
+  tt_int_op(hi, OP_EQ, 111);
+
+  next_random_exponential_delay_range(&lo, &hi, 123, 10);
+  tt_int_op(lo, OP_EQ, 10);
+  tt_int_op(hi, OP_EQ, 369);
+
+  next_random_exponential_delay_range(&lo, &hi, INT_MAX-5, 10);
+  tt_int_op(lo, OP_EQ, 10);
+  tt_int_op(hi, OP_EQ, INT_MAX);
+ done:
+  ;
 }
 
 static void
@@ -4865,9 +4874,11 @@ mock_check_private_dir(const char *dirname, cpd_check_t check,
 
 static char *
 mock_get_datadir_fname(const or_options_t *options,
+                       directory_root_t roottype,
                        const char *sub1, const char *sub2,
                        const char *suffix)
 {
+  (void) roottype;
   char *rv = NULL;
 
   /*
@@ -5024,7 +5035,7 @@ test_dir_dump_unparseable_descriptors(void *data)
   mock_options->MaxUnparseableDescSizeToLog = 1536;
   MOCK(get_options, mock_get_options);
   MOCK(check_private_dir, mock_check_private_dir);
-  MOCK(options_get_datadir_fname2_suffix,
+  MOCK(options_get_dir_fname2_suffix,
        mock_get_datadir_fname);
 
   /*
@@ -5542,7 +5553,7 @@ test_dir_dump_unparseable_descriptors(void *data)
   mock_unlink_reset();
   UNMOCK(write_str_to_file);
   mock_write_str_to_file_reset();
-  UNMOCK(options_get_datadir_fname2_suffix);
+  UNMOCK(options_get_dir_fname2_suffix);
   UNMOCK(check_private_dir);
   UNMOCK(get_options);
   tor_free(mock_options);
@@ -5866,11 +5877,12 @@ mock_networkstatus_consensus_can_use_extra_fallbacks(
   return mock_networkstatus_consensus_can_use_extra_fallbacks_value;
 }
 
-static int mock_any_bridge_descriptors_known_value = 0;
+static int mock_num_bridges_usable_value = 0;
 static int
-mock_any_bridge_descriptors_known(void)
+mock_num_bridges_usable(int use_maybe_reachable)
 {
-  return mock_any_bridge_descriptors_known_value;
+  (void)use_maybe_reachable;
+  return mock_num_bridges_usable_value;
 }
 
 /* data is a 3 character nul-terminated string.
@@ -5899,17 +5911,18 @@ test_dir_find_dl_schedule(void* data)
   }
 
   if (str[2] == 'r') {
-    mock_any_bridge_descriptors_known_value = 1;
+    /* Any positive, non-zero value should work */
+    mock_num_bridges_usable_value = 2;
   } else {
-    mock_any_bridge_descriptors_known_value = 0;
+    mock_num_bridges_usable_value = 0;
   }
 
   MOCK(networkstatus_consensus_is_bootstrapping,
        mock_networkstatus_consensus_is_bootstrapping);
   MOCK(networkstatus_consensus_can_use_extra_fallbacks,
        mock_networkstatus_consensus_can_use_extra_fallbacks);
-  MOCK(any_bridge_descriptors_known,
-       mock_any_bridge_descriptors_known);
+  MOCK(num_bridges_usable,
+       mock_num_bridges_usable);
 
   download_status_t dls;
   smartlist_t server, client, server_cons, client_cons;
@@ -6021,7 +6034,7 @@ test_dir_find_dl_schedule(void* data)
   /* client */
   mock_options->ClientOnly = 1;
   mock_options->UseBridges = 1;
-  if (any_bridge_descriptors_known()) {
+  if (num_bridges_usable(0) > 0) {
     tt_ptr_op(find_dl_schedule(&dls, mock_options), OP_EQ, &bridge);
   } else {
     tt_ptr_op(find_dl_schedule(&dls, mock_options), OP_EQ, &bridge_bootstrap);
@@ -6030,7 +6043,7 @@ test_dir_find_dl_schedule(void* data)
  done:
   UNMOCK(networkstatus_consensus_is_bootstrapping);
   UNMOCK(networkstatus_consensus_can_use_extra_fallbacks);
-  UNMOCK(any_bridge_descriptors_known);
+  UNMOCK(num_bridges_usable);
   UNMOCK(get_options);
   tor_free(mock_options);
   mock_options = NULL;
@@ -6163,6 +6176,106 @@ test_dir_platform_str(void *arg)
   ;
 }
 
+static networkstatus_t *mock_networkstatus;
+
+static networkstatus_t *
+mock_networkstatus_get_latest_consensus_by_flavor(consensus_flavor_t f)
+{
+  (void)f;
+  return mock_networkstatus;
+}
+
+static void
+test_dir_networkstatus_consensus_has_ipv6(void *arg)
+{
+  (void)arg;
+
+  int has_ipv6 = 0;
+
+  /* Init options and networkstatus */
+  or_options_t our_options;
+  mock_options = &our_options;
+  reset_options(mock_options, &mock_get_options_calls);
+  MOCK(get_options, mock_get_options);
+
+  networkstatus_t our_networkstatus;
+  mock_networkstatus = &our_networkstatus;
+  memset(mock_networkstatus, 0, sizeof(*mock_networkstatus));
+  MOCK(networkstatus_get_latest_consensus_by_flavor,
+       mock_networkstatus_get_latest_consensus_by_flavor);
+
+  /* A live consensus */
+  mock_networkstatus->valid_after = time(NULL) - 3600;
+  mock_networkstatus->valid_until = time(NULL) + 3600;
+
+  /* Test the bounds for A lines in the NS consensus */
+  mock_options->UseMicrodescriptors = 0;
+
+  mock_networkstatus->consensus_method = MIN_METHOD_FOR_A_LINES;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  mock_networkstatus->consensus_method = MIN_METHOD_FOR_A_LINES + 1;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  mock_networkstatus->consensus_method = MIN_METHOD_FOR_A_LINES + 20;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  mock_networkstatus->consensus_method = MIN_METHOD_FOR_A_LINES - 1;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(!has_ipv6);
+
+  /* Test the bounds for A lines in the microdesc consensus */
+  mock_options->UseMicrodescriptors = 1;
+
+  mock_networkstatus->consensus_method =
+      MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  mock_networkstatus->consensus_method =
+      MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS + 1;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  mock_networkstatus->consensus_method =
+      MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS + 20;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  mock_networkstatus->consensus_method =
+      MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS - 1;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(!has_ipv6);
+
+  /* Test the edge cases */
+  mock_options->UseMicrodescriptors = 1;
+  mock_networkstatus->consensus_method =
+      MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS;
+
+  /* Reasonably live */
+  mock_networkstatus->valid_until = approx_time() - 60;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(has_ipv6);
+
+  /* Not reasonably live */
+  mock_networkstatus->valid_after = approx_time() - 24*60*60 - 3600;
+  mock_networkstatus->valid_until = approx_time() - 24*60*60 - 60;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(!has_ipv6);
+
+  /* NULL consensus */
+  mock_networkstatus = NULL;
+  has_ipv6 = networkstatus_consensus_has_ipv6(get_options());
+  tt_assert(!has_ipv6);
+
+ done:
+  UNMOCK(get_options);
+  UNMOCK(networkstatus_get_latest_consensus_by_flavor);
+}
+
 #define DIR_LEGACY(name)                             \
   { #name, test_dir_ ## name , TT_FORK, NULL, NULL }
 
@@ -6207,7 +6320,8 @@ struct testcase_t dir_tests[] = {
   DIR(packages, 0),
   DIR(download_status_schedule, 0),
   DIR(download_status_random_backoff, 0),
-  DIR(download_status_increment, 0),
+  DIR(download_status_random_backoff_ranges, 0),
+  DIR(download_status_increment, TT_FORK),
   DIR(authdir_type_to_string, 0),
   DIR(conn_purpose_to_string, 0),
   DIR(should_use_directory_guards, 0),
@@ -6229,6 +6343,7 @@ struct testcase_t dir_tests[] = {
   DIR(assumed_flags, 0),
   DIR(networkstatus_compute_bw_weights_v10, 0),
   DIR(platform_str, 0),
+  DIR(networkstatus_consensus_has_ipv6, TT_FORK),
   END_OF_TESTCASES
 };
 

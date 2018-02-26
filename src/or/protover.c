@@ -27,11 +27,14 @@
 #include "protover.h"
 #include "routerparse.h"
 
+#ifndef HAVE_RUST
+
 static const smartlist_t *get_supported_protocol_list(void);
 static int protocol_list_contains(const smartlist_t *protos,
                                   protocol_type_t pr, uint32_t ver);
 
 /** Mapping between protocol type string and protocol type. */
+/// C_RUST_COUPLED: src/rust/protover/protover.rs `PROTOCOL_NAMES`
 static const struct {
   protocol_type_t protover_type;
   const char *name;
@@ -93,7 +96,7 @@ str_to_protocol_type(const char *s, protocol_type_t *pr_out)
  * Release all space held by a single proto_entry_t structure
  */
 STATIC void
-proto_entry_free(proto_entry_t *entry)
+proto_entry_free_(proto_entry_t *entry)
 {
   if (!entry)
     return;
@@ -280,8 +283,45 @@ protocol_list_supports_protocol(const char *list, protocol_type_t tp,
   return contains;
 }
 
+/**
+ * Return true iff "list" encodes a protocol list that includes support for
+ * the indicated protocol and version, or some later version.
+ */
+int
+protocol_list_supports_protocol_or_later(const char *list,
+                                         protocol_type_t tp,
+                                         uint32_t version)
+{
+  /* NOTE: This is a pretty inefficient implementation. If it ever shows
+   * up in profiles, we should memoize it.
+   */
+  smartlist_t *protocols = parse_protocol_list(list);
+  if (!protocols) {
+    return 0;
+  }
+  const char *pr_name = protocol_type_to_str(tp);
+
+  int contains = 0;
+  SMARTLIST_FOREACH_BEGIN(protocols, proto_entry_t *, proto) {
+    if (strcasecmp(proto->name, pr_name))
+      continue;
+    SMARTLIST_FOREACH_BEGIN(proto->ranges, const proto_range_t *, range) {
+      if (range->high >= version) {
+        contains = 1;
+        goto found;
+      }
+    } SMARTLIST_FOREACH_END(range);
+  } SMARTLIST_FOREACH_END(proto);
+
+ found:
+  SMARTLIST_FOREACH(protocols, proto_entry_t *, ent, proto_entry_free(ent));
+  smartlist_free(protocols);
+  return contains;
+}
+
 /** Return the canonical string containing the list of protocols
  * that we support. */
+/// C_RUST_COUPLED: src/rust/protover/protover.rs `SUPPORTED_PROTOCOLS`
 const char *
 protover_get_supported_protocols(void)
 {
@@ -292,7 +332,7 @@ protover_get_supported_protocols(void)
     "HSDir=1-2 "
     "HSIntro=3-4 "
     "HSRend=1-2 "
-    "Link=1-4 "
+    "Link=1-5 "
     "LinkAuth=1,3 "
     "Microdesc=1-2 "
     "Relay=1-2";
@@ -365,6 +405,8 @@ encode_protocol_list(const smartlist_t *sl)
 
 /* We treat any protocol list with more than this many subprotocols in it
  * as a DoS attempt. */
+/// C_RUST_COUPLED: src/rust/protover/protover.rs
+///                 `MAX_PROTOCOLS_TO_EXPAND`
 static const int MAX_PROTOCOLS_TO_EXPAND = (1<<16);
 
 /** Voting helper: Given a list of proto_entry_t, return a newly allocated
@@ -691,9 +733,15 @@ protocol_list_contains(const smartlist_t *protos,
  * Note that this is only used to infer protocols for Tor versions that
  * can't declare their own.
  **/
+/// C_RUST_COUPLED: src/rust/protover/protover.rs `compute_for_old_tor`
 const char *
 protover_compute_for_old_tor(const char *version)
 {
+  if (version == NULL) {
+    /* No known version; guess the oldest series that is still supported. */
+    version = "0.2.5.15";
+  }
+
   if (tor_version_as_new_as(version,
                             FIRST_TOR_VERSION_TO_ADVERTISE_PROTOCOLS)) {
     return "";
@@ -734,4 +782,6 @@ protover_free_all(void)
     supported_protocol_list = NULL;
   }
 }
+
+#endif /* !defined(HAVE_RUST) */
 

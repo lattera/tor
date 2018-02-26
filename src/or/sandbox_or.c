@@ -59,7 +59,6 @@
 #include "circuitlist.h"
 #include "circuituse.h"
 #include "command.h"
-#include "compat_rust.h"
 #include "compress.h"
 #include "config.h"
 #include "confparse.h"

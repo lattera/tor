@@ -16,6 +16,7 @@
 #include "memarea.h"
 #include "util_process.h"
 #include "log_test_helpers.h"
+#include "compress_zstd.h"
 
 #ifdef HAVE_PWD_H
 #include <pwd.h>
@@ -703,7 +704,7 @@ test_util_time(void *arg)
      * a "correct" retrospective gregorian negative year value,
      * which I'm pretty sure is:
      * -1*(2^63)/60/60/24*2000/730485 + 1970 = -292277022657
-     * 730485 is the number of days in two millenia, including leap days */
+     * 730485 is the number of days in two millennia, including leap days */
     a_time.tm_year = -292277022657-1900;
     CAPTURE();
     tt_int_op((time_t) -1,OP_EQ, tor_timegm(&a_time));
@@ -739,7 +740,7 @@ test_util_time(void *arg)
      * a "correct" proleptic gregorian year value,
      * which I'm pretty sure is:
      * (2^63-1)/60/60/24*2000/730485 + 1970 = 292277026596
-     * 730485 is the number of days in two millenia, including leap days */
+     * 730485 is the number of days in two millennia, including leap days */
     a_time.tm_year = 292277026596-1900;
     CAPTURE();
     tt_int_op((time_t) -1,OP_EQ, tor_timegm(&a_time));
@@ -875,7 +876,7 @@ test_util_time(void *arg)
      * a "correct" retrospective gregorian negative year value,
      * which I'm pretty sure is:
      * -1*(2^63)/60/60/24*2000/730485 + 1970 = -292277022657
-     * 730485 is the number of days in two millenia, including leap days
+     * 730485 is the number of days in two millennia, including leap days
      * (int64_t)b_time.tm_year == (-292277022657LL-1900LL) without clamping */
     t_res = INT64_MIN;
     CAPTURE();
@@ -921,7 +922,7 @@ test_util_time(void *arg)
      * a "correct" proleptic gregorian year value,
      * which I'm pretty sure is:
      * (2^63-1)/60/60/24*2000/730485 + 1970 = 292277026596
-     * 730485 is the number of days in two millenia, including leap days
+     * 730485 is the number of days in two millennia, including leap days
      * (int64_t)b_time.tm_year == (292277026596L-1900L) without clamping */
     t_res = INT64_MAX;
     CAPTURE();
@@ -2395,6 +2396,37 @@ test_util_compress_stream_impl(compress_method_t method,
   tor_free(buf2);
   tor_free(buf3);
 }
+
+/** Setup function for compression tests: handles x-zstd:nostatic
+ */
+static void *
+compression_test_setup(const struct testcase_t *testcase)
+{
+  tor_assert(testcase->setup_data);
+  tor_assert(testcase->setup_data != (void*)TT_SKIP);
+  const char *methodname = testcase->setup_data;
+
+  if (!strcmp(methodname, "x-zstd:nostatic")) {
+    methodname = "x-zstd";
+    tor_zstd_set_static_apis_disabled_for_testing(1);
+  }
+
+  return (void *)methodname;
+}
+
+/** Cleanup for compression tests: disables nostatic */
+static int
+compression_test_cleanup(const struct testcase_t *testcase, void *ptr)
+{
+  (void)testcase;
+  (void)ptr;
+  tor_zstd_set_static_apis_disabled_for_testing(0);
+  return 1;
+}
+
+static const struct testcase_setup_t compress_setup = {
+  compression_test_setup, compression_test_cleanup
+};
 
 /** Run unit tests for compression functions */
 static void
@@ -5465,7 +5497,7 @@ is_there_a_localhost(int family)
 #endif /* 0 */
 
 /* Test for socketpair and ersatz_socketpair().  We test them both, since
- * the latter is a tolerably good way to exersize tor_accept_socket(). */
+ * the latter is a tolerably good way to exercise tor_accept_socket(). */
 static void
 test_util_socketpair(void *arg)
 {
@@ -5801,6 +5833,7 @@ test_util_monotonic_time(void *arg)
   monotime_coarse_t mtc1, mtc2;
   uint64_t nsec1, nsec2, usec1, msec1;
   uint64_t nsecc1, nsecc2, usecc1, msecc1;
+  uint32_t stamp1, stamp2;
 
   monotime_init();
 
@@ -5812,6 +5845,7 @@ test_util_monotonic_time(void *arg)
   nsecc1 = monotime_coarse_absolute_nsec();
   usecc1 = monotime_coarse_absolute_usec();
   msecc1 = monotime_coarse_absolute_msec();
+  stamp1 = monotime_coarse_to_stamp(&mtc1);
 
   tor_sleep_msec(200);
 
@@ -5819,6 +5853,7 @@ test_util_monotonic_time(void *arg)
   monotime_coarse_get(&mtc2);
   nsec2 = monotime_absolute_nsec();
   nsecc2 = monotime_coarse_absolute_nsec();
+  stamp2 = monotime_coarse_to_stamp(&mtc2);
 
   /* We need to be a little careful here since we don't know the system load.
    */
@@ -5835,10 +5870,15 @@ test_util_monotonic_time(void *arg)
   tt_u64_op(usec1, OP_GE, nsec1 / 1000);
   tt_u64_op(msecc1, OP_GE, nsecc1 / 1000000);
   tt_u64_op(usecc1, OP_GE, nsecc1 / 1000);
-  tt_u64_op(msec1, OP_LE, nsec1 / 1000000 + 1);
-  tt_u64_op(usec1, OP_LE, nsec1 / 1000 + 1000);
-  tt_u64_op(msecc1, OP_LE, nsecc1 / 1000000 + 1);
-  tt_u64_op(usecc1, OP_LE, nsecc1 / 1000 + 1000);
+  tt_u64_op(msec1, OP_LE, nsec1 / 1000000 + 10);
+  tt_u64_op(usec1, OP_LE, nsec1 / 1000 + 10000);
+  tt_u64_op(msecc1, OP_LE, nsecc1 / 1000000 + 10);
+  tt_u64_op(usecc1, OP_LE, nsecc1 / 1000 + 10000);
+
+  uint64_t coarse_stamp_diff =
+    monotime_coarse_stamp_units_to_approx_msec(stamp2-stamp1);
+  tt_u64_op(coarse_stamp_diff, OP_GE, 120);
+  tt_u64_op(coarse_stamp_diff, OP_LE, 1200);
 
  done:
   ;
@@ -5912,6 +5952,64 @@ test_util_monotonic_time_ratchet(void *arg)
   ratchet_timeval(&tv_in, &tv_out);
   tt_int_op(tv_out.tv_usec, OP_EQ, 101000);
   tt_i64_op(tv_out.tv_sec, OP_EQ, 2338);
+
+ done:
+  ;
+}
+
+static void
+test_util_monotonic_time_zero(void *arg)
+{
+  (void) arg;
+  monotime_t t1;
+  monotime_coarse_t ct1;
+  monotime_init();
+  /* Check 1: The current time is not zero. */
+  monotime_get(&t1);
+  monotime_coarse_get(&ct1);
+  tt_assert(!monotime_is_zero(&t1));
+  tt_assert(!monotime_coarse_is_zero(&ct1));
+
+  /* Check 2: The _zero() makes the time zero. */
+  monotime_zero(&t1);
+  monotime_coarse_zero(&ct1);
+  tt_assert(monotime_is_zero(&t1));
+  tt_assert(monotime_coarse_is_zero(&ct1));
+ done:
+  ;
+}
+
+static void
+test_util_monotonic_time_add_msec(void *arg)
+{
+  (void) arg;
+  monotime_t t1, t2;
+  monotime_coarse_t ct1, ct2;
+  monotime_init();
+
+  monotime_get(&t1);
+  monotime_coarse_get(&ct1);
+
+  /* adding zero does nothing */
+  monotime_add_msec(&t2, &t1, 0);
+  monotime_coarse_add_msec(&ct2, &ct1, 0);
+  tt_i64_op(monotime_diff_msec(&t1, &t2), OP_EQ, 0);
+  tt_i64_op(monotime_coarse_diff_msec(&ct1, &ct2), OP_EQ, 0);
+
+  /* Add 1337 msec; see if the diff function agree */
+  monotime_add_msec(&t2, &t1, 1337);
+  monotime_coarse_add_msec(&ct2, &ct1, 1337);
+  tt_i64_op(monotime_diff_msec(&t1, &t2), OP_EQ, 1337);
+  tt_i64_op(monotime_coarse_diff_msec(&ct1, &ct2), OP_EQ, 1337);
+
+  /* Add 1337 msec twice more; make sure that any second rollover issues
+   * worked. */
+  monotime_add_msec(&t2, &t2, 1337);
+  monotime_coarse_add_msec(&ct2, &ct2, 1337);
+  monotime_add_msec(&t2, &t2, 1337);
+  monotime_coarse_add_msec(&ct2, &ct2, 1337);
+  tt_i64_op(monotime_diff_msec(&t1, &t2), OP_EQ, 1337*3);
+  tt_i64_op(monotime_coarse_diff_msec(&ct1, &ct2), OP_EQ, 1337*3);
 
  done:
   ;
@@ -6029,22 +6127,22 @@ test_util_get_unquoted_path(void *arg)
   { #name, test_util_ ## name, flags, NULL, NULL }
 
 #define COMPRESS(name, identifier)              \
-  { "compress/" #name, test_util_compress, 0, &passthrough_setup,       \
+  { "compress/" #name, test_util_compress, 0, &compress_setup,          \
     (char*)(identifier) }
 
 #define COMPRESS_CONCAT(name, identifier)                               \
   { "compress_concat/" #name, test_util_decompress_concatenated, 0,     \
-    &passthrough_setup,                                                 \
+    &compress_setup,                                                    \
     (char*)(identifier) }
 
 #define COMPRESS_JUNK(name, identifier)                                 \
   { "compress_junk/" #name, test_util_decompress_junk, 0,               \
-    &passthrough_setup,                                                 \
+    &compress_setup,                                                    \
     (char*)(identifier) }
 
 #define COMPRESS_DOS(name, identifier)                                  \
   { "compress_dos/" #name, test_util_decompress_dos, 0,                 \
-    &passthrough_setup,                                                 \
+    &compress_setup,                                                    \
     (char*)(identifier) }
 
 #ifdef _WIN32
@@ -6075,11 +6173,13 @@ struct testcase_t util_tests[] = {
   COMPRESS(gzip, "gzip"),
   COMPRESS(lzma, "x-tor-lzma"),
   COMPRESS(zstd, "x-zstd"),
+  COMPRESS(zstd_nostatic, "x-zstd:nostatic"),
   COMPRESS(none, "identity"),
   COMPRESS_CONCAT(zlib, "deflate"),
   COMPRESS_CONCAT(gzip, "gzip"),
   COMPRESS_CONCAT(lzma, "x-tor-lzma"),
   COMPRESS_CONCAT(zstd, "x-zstd"),
+  COMPRESS_CONCAT(zstd_nostatic, "x-zstd:nostatic"),
   COMPRESS_CONCAT(none, "identity"),
   COMPRESS_JUNK(zlib, "deflate"),
   COMPRESS_JUNK(gzip, "gzip"),
@@ -6088,6 +6188,7 @@ struct testcase_t util_tests[] = {
   COMPRESS_DOS(gzip, "gzip"),
   COMPRESS_DOS(lzma, "x-tor-lzma"),
   COMPRESS_DOS(zstd, "x-zstd"),
+  COMPRESS_DOS(zstd_nostatic, "x-zstd:nostatic"),
   UTIL_TEST(gzip_compression_bomb, TT_FORK),
   UTIL_LEGACY(datadir),
   UTIL_LEGACY(memarea),
@@ -6150,6 +6251,8 @@ struct testcase_t util_tests[] = {
   UTIL_TEST(calloc_check, 0),
   UTIL_TEST(monotonic_time, 0),
   UTIL_TEST(monotonic_time_ratchet, TT_FORK),
+  UTIL_TEST(monotonic_time_zero, 0),
+  UTIL_TEST(monotonic_time_add_msec, 0),
   UTIL_TEST(htonll, 0),
   UTIL_TEST(get_unquoted_path, 0),
   END_OF_TESTCASES

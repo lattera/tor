@@ -51,7 +51,9 @@
 #include "directory.h"
 #include "dirserv.h"
 #include "dirvote.h"
+#include "dos.h"
 #include "entrynodes.h"
+#include "hibernate.h"
 #include "main.h"
 #include "microdesc.h"
 #include "networkstatus.h"
@@ -197,7 +199,7 @@ networkstatus_read_cached_consensus_impl(int flav,
     tor_snprintf(buf, sizeof(buf), "%s-%s-consensus", prefix, flavorname);
   }
 
-  char *filename = get_datadir_fname(buf);
+  char *filename = get_cachedir_fname(buf);
   char *result = read_file_to_str(filename, RFTS_IGNORE_MISSING, NULL);
   tor_free(filename);
   return result;
@@ -255,7 +257,7 @@ router_reload_consensus_networkstatus(void)
 
 /** Free all storage held by the vote_routerstatus object <b>rs</b>. */
 void
-vote_routerstatus_free(vote_routerstatus_t *rs)
+vote_routerstatus_free_(vote_routerstatus_t *rs)
 {
   vote_microdesc_hash_t *h, *next;
   if (!rs)
@@ -273,7 +275,7 @@ vote_routerstatus_free(vote_routerstatus_t *rs)
 
 /** Free all storage held by the routerstatus object <b>rs</b>. */
 void
-routerstatus_free(routerstatus_t *rs)
+routerstatus_free_(routerstatus_t *rs)
 {
   if (!rs)
     return;
@@ -283,7 +285,7 @@ routerstatus_free(routerstatus_t *rs)
 
 /** Free all storage held in <b>sig</b> */
 void
-document_signature_free(document_signature_t *sig)
+document_signature_free_(document_signature_t *sig)
 {
   tor_free(sig->signature);
   tor_free(sig);
@@ -301,7 +303,7 @@ document_signature_dup(const document_signature_t *sig)
 
 /** Free all storage held in <b>ns</b>. */
 void
-networkstatus_vote_free(networkstatus_t *ns)
+networkstatus_vote_free_(networkstatus_t *ns)
 {
   if (!ns)
     return;
@@ -1209,8 +1211,18 @@ should_delay_dir_fetches(const or_options_t *options, const char **msg_out)
     return 1;
   }
 
+  if (we_are_hibernating()) {
+    if (msg_out) {
+      *msg_out = "We are hibernating or shutting down.";
+    }
+    log_info(LD_DIR, "Delaying dir fetches (Hibernating or shutting down)");
+    return 1;
+  }
+
   if (options->UseBridges) {
-    if (!any_bridge_descriptors_known()) {
+    /* If we know that none of our bridges can possibly work, avoid fetching
+     * directory documents. But if some of them might work, try again. */
+    if (num_bridges_usable(1) == 0) {
       if (msg_out) {
         *msg_out = "No running bridges";
       }
@@ -1499,6 +1511,32 @@ networkstatus_consensus_is_already_downloading(const char *resource)
   return answer;
 }
 
+/* Does the current, reasonably live consensus have IPv6 addresses?
+ * Returns 1 if there is a reasonably live consensus and its consensus method
+ * includes IPv6 addresses in the consensus.
+ * Otherwise, if there is no consensus, or the method does not include IPv6
+ * addresses, returns 0. */
+int
+networkstatus_consensus_has_ipv6(const or_options_t* options)
+{
+  const networkstatus_t *cons = networkstatus_get_reasonably_live_consensus(
+                                                    approx_time(),
+                                                    usable_consensus_flavor());
+
+  /* If we have no consensus, we have no IPv6 in it */
+  if (!cons) {
+    return 0;
+  }
+
+  /* Different flavours of consensus gained IPv6 at different times */
+  if (we_use_microdescriptors_for_circuits(options)) {
+    return
+       cons->consensus_method >= MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS;
+  } else {
+    return cons->consensus_method >= MIN_METHOD_FOR_A_LINES;
+  }
+}
+
 /** Given two router status entries for the same router identity, return 1 if
  * if the contents have changed between them. Otherwise, return 0. */
 static int
@@ -1563,13 +1601,21 @@ notify_control_networkstatus_changed(const networkstatus_t *old_c,
   smartlist_free(changed);
 }
 
-/* Called when the consensus has changed from old_c to new_c. */
+/* Called before the consensus changes from old_c to new_c. */
 static void
-notify_networkstatus_changed(const networkstatus_t *old_c,
-                             const networkstatus_t *new_c)
+notify_before_networkstatus_changes(const networkstatus_t *old_c,
+                                    const networkstatus_t *new_c)
 {
   notify_control_networkstatus_changed(old_c, new_c);
-  scheduler_notify_networkstatus_changed(old_c, new_c);
+  dos_consensus_has_changed(new_c);
+}
+
+/* Called after a new consensus has been put in the global state. It is safe
+ * to use the consensus getters in this function. */
+static void
+notify_after_networkstatus_changes(void)
+{
+  scheduler_notify_networkstatus_changed();
 }
 
 /** Copy all the ancillary information (like router download status and so on)
@@ -1721,7 +1767,7 @@ networkstatus_set_current_consensus(const char *consensus,
 {
   networkstatus_t *c=NULL;
   int r, result = -1;
-  time_t now = time(NULL);
+  time_t now = approx_time();
   const or_options_t *options = get_options();
   char *unverified_fname = NULL, *consensus_fname = NULL;
   int flav = networkstatus_parse_flavor_name(flavor);
@@ -1786,15 +1832,15 @@ networkstatus_set_current_consensus(const char *consensus,
   }
 
   if (!strcmp(flavor, "ns")) {
-    consensus_fname = get_datadir_fname("cached-consensus");
-    unverified_fname = get_datadir_fname("unverified-consensus");
+    consensus_fname = get_cachedir_fname("cached-consensus");
+    unverified_fname = get_cachedir_fname("unverified-consensus");
     if (current_ns_consensus) {
       current_digests = &current_ns_consensus->digests;
       current_valid_after = current_ns_consensus->valid_after;
     }
   } else if (!strcmp(flavor, "microdesc")) {
-    consensus_fname = get_datadir_fname("cached-microdesc-consensus");
-    unverified_fname = get_datadir_fname("unverified-microdesc-consensus");
+    consensus_fname = get_cachedir_fname("cached-microdesc-consensus");
+    unverified_fname = get_cachedir_fname("unverified-microdesc-consensus");
     if (current_md_consensus) {
       current_digests = &current_md_consensus->digests;
       current_valid_after = current_md_consensus->valid_after;
@@ -1803,9 +1849,9 @@ networkstatus_set_current_consensus(const char *consensus,
     cached_dir_t *cur;
     char buf[128];
     tor_snprintf(buf, sizeof(buf), "cached-%s-consensus", flavor);
-    consensus_fname = get_datadir_fname(buf);
+    consensus_fname = get_cachedir_fname(buf);
     tor_snprintf(buf, sizeof(buf), "unverified-%s-consensus", flavor);
-    unverified_fname = get_datadir_fname(buf);
+    unverified_fname = get_cachedir_fname(buf);
     cur = dirserv_get_consensus(flavor);
     if (cur) {
       current_digests = &cur->digests;
@@ -1896,8 +1942,11 @@ networkstatus_set_current_consensus(const char *consensus,
 
   const int is_usable_flavor = flav == usable_consensus_flavor();
 
+  /* Before we switch to the new consensus, notify that we are about to change
+   * it using the old consensus and the new one. */
   if (is_usable_flavor) {
-    notify_networkstatus_changed(networkstatus_get_latest_consensus(), c);
+    notify_before_networkstatus_changes(networkstatus_get_latest_consensus(),
+                                        c);
   }
   if (flav == FLAV_NS) {
     if (current_ns_consensus) {
@@ -1940,12 +1989,20 @@ networkstatus_set_current_consensus(const char *consensus,
   }
 
   if (is_usable_flavor) {
+    /* Notify that we just changed the consensus so the current global value
+     * can be looked at. */
+    notify_after_networkstatus_changes();
+
+    /* The "current" consensus has just been set and it is a usable flavor so
+     * the first thing we need to do is recalculate the voting schedule static
+     * object so we can use the timings in there needed by some subsystems
+     * such as hidden service and shared random. */
+    dirvote_recalculate_timing(options, now);
+
     nodelist_set_consensus(c);
 
     /* XXXXNM Microdescs: needs a non-ns variant. ???? NM*/
     update_consensus_networkstatus_fetch_time(now);
-
-    dirvote_recalculate_timing(options, now);
 
     /* Update ewma and adjust policy if needed; first cache the old value */
     old_ewma_enabled = cell_ewma_enabled();
@@ -2011,6 +2068,9 @@ networkstatus_set_current_consensus(const char *consensus,
     tor_free(flavormsg);
   }
 
+  /* We got a new consesus. Reset our md fetch fail cache */
+  microdesc_reset_outdated_dirservers_list();
+
   router_dir_info_changed();
 
   result = 0;
@@ -2034,6 +2094,7 @@ networkstatus_note_certs_arrived(const char *source_dir)
 {
   int i;
   for (i=0; i<N_CONSENSUS_FLAVORS; ++i) {
+    const char *flavor_name = networkstatus_get_flavor_name(i);
     consensus_waiting_for_certs_t *waiting = &consensus_waiting_for_certs[i];
     if (!waiting->consensus)
       continue;
@@ -2041,7 +2102,7 @@ networkstatus_note_certs_arrived(const char *source_dir)
       char *waiting_body = waiting->body;
       if (!networkstatus_set_current_consensus(
                                  waiting_body,
-                                 networkstatus_get_flavor_name(i),
+                                 flavor_name,
                                  NSSET_WAS_WAITING_FOR_CERTS,
                                  source_dir)) {
         tor_free(waiting_body);
@@ -2194,7 +2255,9 @@ signed_descs_update_status_from_consensus_networkstatus(smartlist_t *descs)
 char *
 networkstatus_getinfo_helper_single(const routerstatus_t *rs)
 {
-  return routerstatus_format_entry(rs, NULL, NULL, NS_CONTROL_PORT, NULL);
+  return routerstatus_format_entry(rs, NULL, NULL, NS_CONTROL_PORT,
+                                   ROUTERSTATUS_FORMAT_NO_CONSENSUS_METHOD,
+                                   NULL);
 }
 
 /** Alloc and return a string describing routerstatuses for the most
@@ -2207,13 +2270,13 @@ networkstatus_getinfo_helper_single(const routerstatus_t *rs)
 char *
 networkstatus_getinfo_by_purpose(const char *purpose_string, time_t now)
 {
-  time_t cutoff = now - ROUTER_MAX_AGE_TO_PUBLISH;
+  const time_t cutoff = now - ROUTER_MAX_AGE_TO_PUBLISH;
   char *answer;
   routerlist_t *rl = router_get_routerlist();
   smartlist_t *statuses;
-  uint8_t purpose = router_purpose_from_string(purpose_string);
+  const uint8_t purpose = router_purpose_from_string(purpose_string);
   routerstatus_t rs;
-  int bridge_auth = authdir_mode_bridge(get_options());
+  const int bridge_auth = authdir_mode_bridge(get_options());
 
   if (purpose == ROUTER_PURPOSE_UNKNOWN) {
     log_info(LD_DIR, "Unrecognized purpose '%s' when listing router statuses.",
@@ -2230,6 +2293,7 @@ networkstatus_getinfo_by_purpose(const char *purpose_string, time_t now)
       continue;
     if (ri->purpose != purpose)
       continue;
+    /* TODO: modifying the running flag in a getinfo is a bad idea */
     if (bridge_auth && ri->purpose == ROUTER_PURPOSE_BRIDGE)
       dirserv_set_router_is_running(ri, now);
     /* then generate and write out status lines for each of them */
@@ -2248,7 +2312,6 @@ void
 networkstatus_dump_bridge_status_to_file(time_t now)
 {
   char *status = networkstatus_getinfo_by_purpose("bridge", now);
-  const or_options_t *options = get_options();
   char *fname = NULL;
   char *thresholds = NULL;
   char *published_thresholds_and_status = NULL;
@@ -2270,8 +2333,7 @@ networkstatus_dump_bridge_status_to_file(time_t now)
                "published %s\nflag-thresholds %s\n%s%s",
                published, thresholds, fingerprint_line ? fingerprint_line : "",
                status);
-  tor_asprintf(&fname, "%s"PATH_SEPARATOR"networkstatus-bridges",
-               options->DataDirectory);
+  fname = get_datadir_fname("networkstatus-bridges");
   write_str_to_file(fname,published_thresholds_and_status,0);
   tor_free(thresholds);
   tor_free(published_thresholds_and_status);

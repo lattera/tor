@@ -13,6 +13,7 @@
 #include "circuitlist.h"
 #include "circuituse.h"
 #include "config.h"
+#include "nodelist.h"
 #include "policies.h"
 #include "relay.h"
 #include "rendservice.h"
@@ -343,6 +344,17 @@ send_establish_intro(const hs_service_t *service,
   memwipe(payload, 0, sizeof(payload));
 }
 
+/* Return a string constant describing the anonymity of service. */
+static const char *
+get_service_anonymity_string(const hs_service_t *service)
+{
+  if (service->config.is_single_onion) {
+    return "single onion";
+  } else {
+    return "hidden";
+  }
+}
+
 /* For a given service, the ntor onion key and a rendezvous cookie, launch a
  * circuit to the rendezvous point specified by the link specifiers. On
  * success, a circuit identifier is attached to the circuit with the needed
@@ -370,7 +382,15 @@ launch_rendezvous_point_circuit(const hs_service_t *service,
                                         &data->onion_pk,
                                         service->config.is_single_onion);
   if (info == NULL) {
-    /* We are done here, we can't extend to the rendezvous point. */
+    /* We are done here, we can't extend to the rendezvous point.
+     * If you're running an IPv6-only v3 single onion service on 0.3.2 or with
+     * 0.3.2 clients, and somehow disable the option check, it will fail here.
+     */
+    log_fn(LOG_PROTOCOL_WARN, LD_REND,
+           "Not enough info to open a circuit to a rendezvous point for "
+           "%s service %s.",
+           get_service_anonymity_string(service),
+           safe_str_client(service->onion_address));
     goto end;
   }
 
@@ -392,17 +412,19 @@ launch_rendezvous_point_circuit(const hs_service_t *service,
     }
   }
   if (circ == NULL) {
-    log_warn(LD_REND, "Giving up on launching rendezvous circuit to %s "
-                      "for service %s",
+    log_warn(LD_REND, "Giving up on launching a rendezvous circuit to %s "
+                      "for %s service %s",
              safe_str_client(extend_info_describe(info)),
+             get_service_anonymity_string(service),
              safe_str_client(service->onion_address));
     goto end;
   }
   log_info(LD_REND, "Rendezvous circuit launched to %s with cookie %s "
-                    "for service %s",
+                    "for %s service %s",
            safe_str_client(extend_info_describe(info)),
            safe_str_client(hex_str((const char *) data->rendezvous_cookie,
                                    REND_COOKIE_LEN)),
+           get_service_anonymity_string(service),
            safe_str_client(service->onion_address));
   tor_assert(circ->build_state);
   /* Rendezvous circuit have a specific timeout for the time spent on trying
@@ -463,9 +485,14 @@ can_relaunch_service_rendezvous_point(const origin_circuit_t *circ)
     goto disallow;
   }
 
+  /* We check failure_count >= hs_get_service_max_rend_failures()-1 below, and
+   * the -1 is because we increment the failure count for our current failure
+   * *after* this clause. */
+  int max_rend_failures = hs_get_service_max_rend_failures() - 1;
+
   /* A failure count that has reached maximum allowed or circuit that expired,
    * we skip relaunching. */
-  if (circ->build_state->failure_count > MAX_REND_FAILURES ||
+  if (circ->build_state->failure_count > max_rend_failures ||
       circ->build_state->expiry_time <= time(NULL)) {
     log_info(LD_REND, "Attempt to build a rendezvous circuit to %s has "
                       "failed with %d attempts and expiry time %ld. "
@@ -524,7 +551,7 @@ retry_service_rendezvous_point(const origin_circuit_t *circ)
 
   /* Transfer build state information to the new circuit state in part to
    * catch any other failures. */
-  new_circ->build_state->failure_count = bstate->failure_count++;
+  new_circ->build_state->failure_count = bstate->failure_count+1;
   new_circ->build_state->expiry_time = bstate->expiry_time;
   new_circ->hs_ident = hs_ident_circuit_dup(circ->hs_ident);
 
@@ -532,69 +559,99 @@ retry_service_rendezvous_point(const origin_circuit_t *circ)
   return;
 }
 
-/* Using an extend info object ei, set all possible link specifiers in lspecs.
- * IPv4, legacy ID and ed25519 ID are mandatory thus MUST be present in ei. */
+/* Add all possible link specifiers in node to lspecs.
+ * legacy ID is mandatory thus MUST be present in node. If the primary address
+ * is not IPv4, log a BUG() warning, and return an empty smartlist.
+ * Includes ed25519 id and IPv6 link specifiers if present in the node. */
 static void
-get_lspecs_from_extend_info(const extend_info_t *ei, smartlist_t *lspecs)
+get_lspecs_from_node(const node_t *node, smartlist_t *lspecs)
 {
   link_specifier_t *ls;
+  tor_addr_port_t ap;
 
-  tor_assert(ei);
+  tor_assert(node);
   tor_assert(lspecs);
 
-  /* IPv4 is mandatory. */
+  /* Get the relay's IPv4 address. */
+  node_get_prim_orport(node, &ap);
+
+  /* We expect the node's primary address to be a valid IPv4 address.
+   * This conforms to the protocol, which requires either an IPv4 or IPv6
+   * address (or both). */
+  if (BUG(!tor_addr_is_v4(&ap.addr)) ||
+      BUG(!tor_addr_port_is_valid_ap(&ap, 0))) {
+    return;
+  }
+
   ls = link_specifier_new();
   link_specifier_set_ls_type(ls, LS_IPV4);
-  link_specifier_set_un_ipv4_addr(ls, tor_addr_to_ipv4h(&ei->addr));
-  link_specifier_set_un_ipv4_port(ls, ei->port);
+  link_specifier_set_un_ipv4_addr(ls, tor_addr_to_ipv4h(&ap.addr));
+  link_specifier_set_un_ipv4_port(ls, ap.port);
   /* Four bytes IPv4 and two bytes port. */
-  link_specifier_set_ls_len(ls, sizeof(ei->addr.addr.in_addr) +
-                            sizeof(ei->port));
+  link_specifier_set_ls_len(ls, sizeof(ap.addr.addr.in_addr) +
+                            sizeof(ap.port));
   smartlist_add(lspecs, ls);
 
-  /* Legacy ID is mandatory. */
+  /* Legacy ID is mandatory and will always be present in node. */
   ls = link_specifier_new();
   link_specifier_set_ls_type(ls, LS_LEGACY_ID);
-  memcpy(link_specifier_getarray_un_legacy_id(ls), ei->identity_digest,
+  memcpy(link_specifier_getarray_un_legacy_id(ls), node->identity,
          link_specifier_getlen_un_legacy_id(ls));
   link_specifier_set_ls_len(ls, link_specifier_getlen_un_legacy_id(ls));
   smartlist_add(lspecs, ls);
 
-  /* ed25519 ID is mandatory. */
-  ls = link_specifier_new();
-  link_specifier_set_ls_type(ls, LS_ED25519_ID);
-  memcpy(link_specifier_getarray_un_ed25519_id(ls), &ei->ed_identity,
-         link_specifier_getlen_un_ed25519_id(ls));
-  link_specifier_set_ls_len(ls, link_specifier_getlen_un_ed25519_id(ls));
-  smartlist_add(lspecs, ls);
+  /* ed25519 ID is only included if the node has it. */
+  if (!ed25519_public_key_is_zero(&node->ed25519_id)) {
+    ls = link_specifier_new();
+    link_specifier_set_ls_type(ls, LS_ED25519_ID);
+    memcpy(link_specifier_getarray_un_ed25519_id(ls), &node->ed25519_id,
+           link_specifier_getlen_un_ed25519_id(ls));
+    link_specifier_set_ls_len(ls, link_specifier_getlen_un_ed25519_id(ls));
+    smartlist_add(lspecs, ls);
+  }
 
-  /* XXX: IPv6 is not clearly a thing in extend_info_t? */
+  /* Check for IPv6. If so, include it as well. */
+  if (node_has_ipv6_orport(node)) {
+    ls = link_specifier_new();
+    node_get_pref_ipv6_orport(node, &ap);
+    link_specifier_set_ls_type(ls, LS_IPV6);
+    size_t addr_len = link_specifier_getlen_un_ipv6_addr(ls);
+    const uint8_t *in6_addr = tor_addr_to_in6_addr8(&ap.addr);
+    uint8_t *ipv6_array = link_specifier_getarray_un_ipv6_addr(ls);
+    memcpy(ipv6_array, in6_addr, addr_len);
+    link_specifier_set_un_ipv6_port(ls, ap.port);
+    /* Sixteen bytes IPv6 and two bytes port. */
+    link_specifier_set_ls_len(ls, addr_len + sizeof(ap.port));
+    smartlist_add(lspecs, ls);
+  }
 }
 
-/* Using the given descriptor intro point ip, the extend information of the
- * rendezvous point rp_ei and the service's subcredential, populate the
+/* Using the given descriptor intro point ip, the node of the
+ * rendezvous point rp_node and the service's subcredential, populate the
  * already allocated intro1_data object with the needed key material and link
  * specifiers.
  *
- * This can't fail but the ip MUST be a valid object containing the needed
- * keys and authentication method. */
+ * If rp_node has an invalid primary address, intro1_data->link_specifiers
+ * will be an empty list. Otherwise, this function can't fail. The ip
+ * MUST be a valid object containing the needed keys and authentication
+ * method. */
 static void
 setup_introduce1_data(const hs_desc_intro_point_t *ip,
-                      const extend_info_t *rp_ei,
+                      const node_t *rp_node,
                       const uint8_t *subcredential,
                       hs_cell_introduce1_data_t *intro1_data)
 {
   smartlist_t *rp_lspecs;
 
   tor_assert(ip);
-  tor_assert(rp_ei);
+  tor_assert(rp_node);
   tor_assert(subcredential);
   tor_assert(intro1_data);
 
   /* Build the link specifiers from the extend information of the rendezvous
    * circuit that we've picked previously. */
   rp_lspecs = smartlist_new();
-  get_lspecs_from_extend_info(rp_ei, rp_lspecs);
+  get_lspecs_from_node(rp_node, rp_lspecs);
 
   /* Populate the introduce1 data object. */
   memset(intro1_data, 0, sizeof(hs_cell_introduce1_data_t));
@@ -605,7 +662,7 @@ setup_introduce1_data(const hs_desc_intro_point_t *ip,
   intro1_data->auth_pk = &ip->auth_key_cert->signed_key;
   intro1_data->enc_pk = &ip->enc_key;
   intro1_data->subcredential = subcredential;
-  intro1_data->onion_pk = &rp_ei->curve25519_onion_key;
+  intro1_data->onion_pk = node_get_curve25519_onion_key(rp_node);
   intro1_data->link_specifiers = rp_lspecs;
 }
 
@@ -642,12 +699,12 @@ hs_circ_service_get_intro_circ(const hs_service_intro_point_t *ip)
  *
  * We currently relaunch connections to rendezvous points if:
  * - A rendezvous circuit timed out before connecting to RP.
- * - The redenzvous circuit failed to connect to the RP.
+ * - The rendezvous circuit failed to connect to the RP.
  *
  * We avoid relaunching a connection to this rendezvous point if:
- * - We have already tried MAX_REND_FAILURES times to connect to this RP.
+ * - We have already tried MAX_REND_FAILURES times to connect to this RP,
  * - We've been trying to connect to this RP for more than MAX_REND_TIMEOUT
- *   seconds
+ *   seconds, or
  * - We've already retried this specific rendezvous circuit.
  */
 void
@@ -661,11 +718,11 @@ hs_circ_retry_service_rendezvous_point(origin_circuit_t *circ)
     goto done;
   }
 
-  /* Flag the circuit that we are relaunching so to avoid to relaunch twice a
+  /* Flag the circuit that we are relaunching, to avoid to relaunch twice a
    * circuit to the same rendezvous point at the same time. */
   circ->hs_service_side_rend_circ_has_been_relaunched = 1;
 
-  /* Legacy service don't have an hidden service ident. */
+  /* Legacy services don't have a hidden service ident. */
   if (circ->hs_ident) {
     retry_service_rendezvous_point(circ);
   } else {
@@ -767,7 +824,11 @@ hs_circ_service_intro_has_opened(hs_service_t *service,
     /* Cleaning up the hidden service identifier and repurpose. */
     hs_ident_circuit_free(circ->hs_ident);
     circ->hs_ident = NULL;
-    circuit_change_purpose(TO_CIRCUIT(circ), CIRCUIT_PURPOSE_C_GENERAL);
+    if (circuit_should_use_vanguards(TO_CIRCUIT(circ)->purpose))
+      circuit_change_purpose(TO_CIRCUIT(circ), CIRCUIT_PURPOSE_HS_VANGUARDS);
+    else
+      circuit_change_purpose(TO_CIRCUIT(circ), CIRCUIT_PURPOSE_C_GENERAL);
+
     /* Inform that this circuit just opened for this new purpose. */
     circuit_has_opened(circ);
     /* This return value indicate to the caller that the IP object should be
@@ -1049,10 +1110,28 @@ hs_circ_send_introduce1(origin_circuit_t *intro_circ,
   tor_assert(ip);
   tor_assert(subcredential);
 
+  /* It is undefined behavior in hs_cell_introduce1_data_clear() if intro1_data
+   * has been declared on the stack but not initialized. Here, we set it to 0.
+   */
+  memset(&intro1_data, 0, sizeof(hs_cell_introduce1_data_t));
+
   /* This takes various objects in order to populate the introduce1 data
    * object which is used to build the content of the cell. */
-  setup_introduce1_data(ip, rend_circ->build_state->chosen_exit,
-                        subcredential, &intro1_data);
+  const node_t *exit_node = build_state_get_exit_node(rend_circ->build_state);
+  if (exit_node == NULL) {
+    log_info(LD_REND, "Unable to get rendezvous point for circuit %u. "
+             "Failing.", TO_CIRCUIT(intro_circ)->n_circ_id);
+    goto done;
+  }
+  setup_introduce1_data(ip, exit_node, subcredential, &intro1_data);
+  /* If we didn't get any link specifiers, it's because our node was
+   * bad. */
+  if (BUG(!intro1_data.link_specifiers) ||
+      !smartlist_len(intro1_data.link_specifiers)) {
+    log_warn(LD_REND, "Unable to get link specifiers for INTRODUCE1 cell on "
+             "circuit %u.", TO_CIRCUIT(intro_circ)->n_circ_id);
+    goto done;
+  }
 
   /* Final step before we encode a cell, we setup the circuit identifier which
    * will generate both the rendezvous cookie and client keypair for this
@@ -1140,5 +1219,33 @@ hs_circ_send_establish_rendezvous(origin_circuit_t *circ)
   return 0;
  err:
   return -1;
+}
+
+/* We are about to close or free this <b>circ</b>. Clean it up from any
+ * related HS data structures. This function can be called multiple times
+ * safely for the same circuit. */
+void
+hs_circ_cleanup(circuit_t *circ)
+{
+  tor_assert(circ);
+
+  /* If it's a service-side intro circ, notify the HS subsystem for the intro
+   * point circuit closing so it can be dealt with cleanly. */
+  if (circ->purpose == CIRCUIT_PURPOSE_S_ESTABLISH_INTRO ||
+      circ->purpose == CIRCUIT_PURPOSE_S_INTRO) {
+    hs_service_intro_circ_has_closed(TO_ORIGIN_CIRCUIT(circ));
+  }
+
+  /* Clear HS circuitmap token for this circ (if any). Very important to be
+   * done after the HS subsystem has been notified of the close else the
+   * circuit will not be found.
+   *
+   * We do this at the close if possible because from that point on, the
+   * circuit is good as dead. We can't rely on removing it in the circuit
+   * free() function because we open a race window between the close and free
+   * where we can't register a new circuit for the same intro point. */
+  if (circ->hs_token) {
+    hs_circuitmap_remove_circuit(circ);
+  }
 }
 

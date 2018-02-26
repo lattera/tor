@@ -45,6 +45,8 @@
 
 #define DEBUGGING_CLOSE
 
+#if defined(USE_LIBSECCOMP)
+
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -62,6 +64,9 @@
 #include <time.h>
 #include <poll.h>
 
+#ifdef HAVE_GNU_LIBC_VERSION_H
+#include <gnu/libc-version.h>
+#endif
 #ifdef HAVE_LINUX_NETFILTER_IPV4_H
 #include <linux/netfilter_ipv4.h>
 #endif
@@ -103,6 +108,11 @@
 
 #define M_SYSCALL arm_r7
 
+#elif defined(__aarch64__) && defined(__LP64__)
+
+#define REG_SYSCALL 8
+#define M_SYSCALL regs[REG_SYSCALL]
+
 #endif /* defined(__i386__) || ... */
 
 /**Determines if at least one sandbox is active.*/
@@ -133,6 +143,9 @@ static int filter_nopar_gen[] = {
     SCMP_SYS(clone),
     SCMP_SYS(epoll_create),
     SCMP_SYS(epoll_wait),
+#ifdef __NR_epoll_pwait
+    SCMP_SYS(epoll_pwait),
+#endif
 #ifdef HAVE_EVENTFD
     SCMP_SYS(eventfd2),
 #endif
@@ -151,6 +164,7 @@ static int filter_nopar_gen[] = {
     SCMP_SYS(fstat64),
 #endif
     SCMP_SYS(futex),
+    SCMP_SYS(getdents),
     SCMP_SYS(getdents64),
     SCMP_SYS(getegid),
 #ifdef __NR_getegid32
@@ -262,12 +276,6 @@ static int filter_nopar_gen[] = {
   seccomp_rule_add((ctx),(act),(call),3,(f1),(f2),(f3))
 #define seccomp_rule_add_4(ctx,act,call,f1,f2,f3,f4)      \
   seccomp_rule_add((ctx),(act),(call),4,(f1),(f2),(f3),(f4))
-
-static int
-sandbox_seccomp_is_active(void)
-{
-  return sandbox_active != 0;
-}
 
 /**
  * Function responsible for setting up the rt_sigaction syscall for
@@ -402,6 +410,52 @@ sb_mmap2(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
 }
 #endif /* defined(__NR_mmap2) */
 
+#ifdef HAVE_GNU_LIBC_VERSION_H
+#ifdef HAVE_GNU_GET_LIBC_VERSION
+#define CHECK_LIBC_VERSION
+#endif
+#endif
+
+/* Return true if we think we're running with a libc that always uses
+ * openat on linux. */
+static int
+libc_uses_openat_for_everything(void)
+{
+#ifdef CHECK_LIBC_VERSION
+  const char *version = gnu_get_libc_version();
+  if (version == NULL)
+    return 0;
+
+  int major = -1;
+  int minor = -1;
+
+  tor_sscanf(version, "%d.%d", &major, &minor);
+  if (major >= 3)
+    return 1;
+  else if (major == 2 && minor >= 26)
+    return 1;
+  else
+    return 0;
+#else /* !(defined(CHECK_LIBC_VERSION)) */
+  return 0;
+#endif /* defined(CHECK_LIBC_VERSION) */
+}
+
+/** Allow a single file to be opened.  If <b>use_openat</b> is true,
+ * we're using a libc that remaps all the opens into openats. */
+static int
+allow_file_open(scmp_filter_ctx ctx, int use_openat, const char *file)
+{
+  if (use_openat) {
+    return seccomp_rule_add_2(ctx, SCMP_ACT_ALLOW, SCMP_SYS(openat),
+                              SCMP_CMP_STR(0, SCMP_CMP_EQ, AT_FDCWD),
+                              SCMP_CMP_STR(1, SCMP_CMP_EQ, file));
+  } else {
+    return seccomp_rule_add_1(ctx, SCMP_ACT_ALLOW, SCMP_SYS(open),
+                              SCMP_CMP_STR(0, SCMP_CMP_EQ, file));
+  }
+}
+
 /**
  * Function responsible for setting up the open syscall for
  * the seccomp filter sandbox.
@@ -412,14 +466,15 @@ sb_open(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
   int rc;
   sandbox_cfg_t *elem = NULL;
 
+  int use_openat = libc_uses_openat_for_everything();
+
   // for each dynamic parameter filters
   for (elem = filter; elem != NULL; elem = elem->next) {
     smp_param_t *param = elem->param;
 
     if (param != NULL && param->prot == 1 && param->syscall
         == SCMP_SYS(open)) {
-      rc = seccomp_rule_add_1(ctx, SCMP_ACT_ALLOW, SCMP_SYS(open),
-            SCMP_CMP_STR(0, SCMP_CMP_EQ, param->value));
+      rc = allow_file_open(ctx, use_openat, param->value);
       if (rc != 0) {
         log_err(LD_BUG,"(Sandbox) failed to add open syscall, received "
             "libseccomp error %d", rc);
@@ -434,6 +489,15 @@ sb_open(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
   if (rc != 0) {
     log_err(LD_BUG,"(Sandbox) failed to add open syscall, received libseccomp "
         "error %d", rc);
+    return rc;
+  }
+
+  rc = seccomp_rule_add_1(ctx, SCMP_ACT_ERRNO(EACCES), SCMP_SYS(openat),
+                SCMP_CMP_MASKED(2, O_CLOEXEC|O_NONBLOCK|O_NOCTTY|O_NOFOLLOW,
+                                O_RDONLY));
+  if (rc != 0) {
+    log_err(LD_BUG,"(Sandbox) failed to add openat syscall, received "
+            "libseccomp error %d", rc);
     return rc;
   }
 
@@ -626,7 +690,7 @@ sb_socket(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
 
   rc = seccomp_rule_add_3(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket),
       SCMP_CMP(0, SCMP_CMP_EQ, PF_NETLINK),
-      SCMP_CMP(1, SCMP_CMP_EQ, SOCK_RAW),
+      SCMP_CMP_MASKED(1, SOCK_CLOEXEC, SOCK_RAW),
       SCMP_CMP(2, SCMP_CMP_EQ, 0));
   if (rc)
     return rc;
@@ -1059,6 +1123,19 @@ sb_stat64(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
 }
 #endif /* defined(__NR_stat64) */
 
+static int
+sb_kill(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
+{
+  (void) filter;
+#ifdef __NR_kill
+  /* Allow killing anything with signal 0 -- it isn't really a kill. */
+  return seccomp_rule_add_1(ctx, SCMP_ACT_ALLOW, SCMP_SYS(kill),
+       SCMP_CMP(1, SCMP_CMP_EQ, 0));
+#else
+  return 0;
+#endif /* defined(__NR_kill) */
+}
+
 /**
  * Array of function pointers responsible for filtering different syscalls at
  * a parameter level.
@@ -1095,13 +1172,13 @@ static sandbox_filter_func_t filter_func[] = {
     sb_setsockopt,
     sb_getsockopt,
     sb_socketpair,
-
 #ifdef HAVE_KIST_SUPPORT
     sb_ioctl,
 #endif
+    sb_kill
 };
 
-static const char *
+const char *
 sandbox_seccomp_intern_string(const char *str)
 {
   sandbox_cfg_t *elem;
@@ -1318,16 +1395,12 @@ new_element(int syscall, char *value)
 #define SCMP_stat SCMP_SYS(stat)
 #endif
 
-static int
+int
 sandbox_seccomp_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
   elem = new_element(SCMP_stat, file);
-  if (!elem) {
-    log_err(LD_BUG,"(Sandbox) failed to register parameter!");
-    return -1;
-  }
 
   elem->next = *cfg;
   *cfg = elem;
@@ -1335,16 +1408,12 @@ sandbox_seccomp_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-static int
+int
 sandbox_seccomp_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
   elem = new_element(SCMP_SYS(open), file);
-  if (!elem) {
-    log_err(LD_BUG,"(Sandbox) failed to register parameter!");
-    return -1;
-  }
 
   elem->next = *cfg;
   *cfg = elem;
@@ -1352,16 +1421,12 @@ sandbox_seccomp_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-static int
+int
 sandbox_seccomp_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
   elem = new_element(SCMP_SYS(chmod), file);
-  if (!elem) {
-    log_err(LD_BUG,"(Sandbox) failed to register parameter!");
-    return -1;
-  }
 
   elem->next = *cfg;
   *cfg = elem;
@@ -1369,16 +1434,12 @@ sandbox_seccomp_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-static int
+int
 sandbox_seccomp_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
   elem = new_element(SCMP_SYS(chown), file);
-  if (!elem) {
-    log_err(LD_BUG,"(Sandbox) failed to register parameter!");
-    return -1;
-  }
 
   elem->next = *cfg;
   *cfg = elem;
@@ -1386,34 +1447,25 @@ sandbox_seccomp_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
   return 0;
 }
 
-static int
+int
 sandbox_seccomp_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
 {
   sandbox_cfg_t *elem = NULL;
 
   elem = new_element2(SCMP_SYS(rename), file1, file2);
 
-  if (!elem) {
-    log_err(LD_BUG,"(Sandbox) failed to register parameter!");
-    return -1;
-  }
-
   elem->next = *cfg;
   *cfg = elem;
 
   return 0;
 }
 
-static int
+int
 sandbox_seccomp_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
 {
   sandbox_cfg_t *elem = NULL;
 
   elem = new_element(SCMP_SYS(openat), file);
-  if (!elem) {
-    log_err(LD_BUG,"(Sandbox) failed to register parameter!");
-    return -1;
-  }
 
   elem->next = *cfg;
   *cfg = elem;
@@ -1451,8 +1503,12 @@ cached_getaddrinfo_items_eq(const cached_getaddrinfo_item_t *a,
   return (a->family == b->family) && 0 == strcmp(a->name, b->name);
 }
 
+#define cached_getaddrinfo_item_free(item)              \
+  FREE_AND_NULL(cached_getaddrinfo_item_t,              \
+                cached_getaddrinfo_item_free_, (item))
+
 static void
-cached_getaddrinfo_item_free(cached_getaddrinfo_item_t *item)
+cached_getaddrinfo_item_free_(cached_getaddrinfo_item_t *item)
 {
   if (item == NULL)
     return;
@@ -1480,20 +1536,20 @@ static int sandbox_getaddrinfo_cache_disabled = 0;
 /** Tell the sandbox layer not to try to cache getaddrinfo results. Used as in
  * tor-resolve, when we have no intention of initializing crypto or of
  * installing the sandbox.*/
-static void
+void
 sandbox_seccomp_disable_getaddrinfo_cache(void)
 {
   sandbox_getaddrinfo_cache_disabled = 1;
 }
 
-static void
+void
 sandbox_seccomp_freeaddrinfo(struct addrinfo *ai)
 {
   if (sandbox_getaddrinfo_cache_disabled)
     freeaddrinfo(ai);
 }
 
-static int
+int
 sandbox_seccomp_getaddrinfo(const char *name, const char *servname,
                     const struct addrinfo *hints,
                     struct addrinfo **res)
@@ -1521,7 +1577,7 @@ sandbox_seccomp_getaddrinfo(const char *name, const char *servname,
   search.family = hints ? hints->ai_family : AF_UNSPEC;
   item = HT_FIND(getaddrinfo_cache, &getaddrinfo_cache, &search);
 
-  if (! sandbox_seccomp_is_active()) {
+  if (! sandbox_is_active()) {
     /* If the sandbox is not turned on yet, then getaddrinfo and store the
        result. */
 
@@ -1556,7 +1612,7 @@ sandbox_seccomp_getaddrinfo(const char *name, const char *servname,
   return EAI_NONAME;
 }
 
-static int
+int
 sandbox_seccomp_add_addrinfo(const char *name)
 {
   struct addrinfo *res;
@@ -1570,15 +1626,15 @@ sandbox_seccomp_add_addrinfo(const char *name)
     hints.ai_family = families[i];
 
     res = NULL;
-    (void) sandbox_seccomp_getaddrinfo(name, NULL, &hints, &res);
+    (void) sandbox_getaddrinfo(name, NULL, &hints, &res);
     if (res)
-      sandbox_seccomp_freeaddrinfo(res);
+      sandbox_freeaddrinfo(res);
   }
 
   return 0;
 }
 
-static void
+void
 sandbox_seccomp_free_getaddrinfo_cache(void)
 {
   cached_getaddrinfo_item_t **next, **item, *this;
@@ -1606,7 +1662,8 @@ add_param_filter(scmp_filter_ctx ctx, sandbox_cfg_t* cfg)
 
   // function pointer
   for (i = 0; i < ARRAY_LENGTH(filter_func); i++) {
-    if ((filter_func[i])(ctx, cfg)) {
+    rc = filter_func[i](ctx, cfg);
+    if (rc) {
       log_err(LD_BUG,"(Sandbox) failed to add syscall %d, received libseccomp "
           "error %d", i, rc);
       return rc;
@@ -1820,6 +1877,9 @@ register_cfg(sandbox_cfg_t* cfg)
   return 0;
 }
 
+#endif /* defined(USE_LIBSECCOMP) */
+
+#ifdef USE_LIBSECCOMP
 /**
  * Initialises the syscall sandbox filter for any linux architecture, taking
  * into account various available features for different linux flavours.
@@ -1842,10 +1902,93 @@ initialise_libseccomp_sandbox(sandbox_cfg_t* cfg)
   return 0;
 }
 
-static sandbox_cfg_t *
+int
+sandbox_seccomp_is_active(void)
+{
+  return sandbox_active != 0;
+}
+#endif /* defined(USE_LIBSECCOMP) */
+
+sandbox_seccomp_cfg_t*
 sandbox_seccomp_cfg_new(void)
 {
   return NULL;
+}
+
+int
+sandbox_seccomp_init(sandbox_cfg_t *cfg)
+{
+#if defined(USE_LIBSECCOMP)
+  return initialise_libseccomp_sandbox(cfg);
+
+#elif defined(__linux__)
+  (void)cfg;
+  log_warn(LD_GENERAL,
+           "This version of Tor was built without support for sandboxing. To "
+           "build with support for sandboxing on Linux, you must have "
+           "libseccomp and its necessary header files (e.g. seccomp.h).");
+  return 0;
+
+#else
+  (void)cfg;
+  log_warn(LD_GENERAL,
+           "Currently, sandboxing is only implemented on Linux. The feature "
+           "is disabled on your platform.");
+  return 0;
+#endif /* defined(USE_LIBSECCOMP) || ... */
+}
+
+int
+sandbox_seccomp_cfg_allow_open_filename(sandbox_cfg_t **cfg, char *file)
+{
+  (void)cfg; (void)file;
+  return 0;
+}
+
+int
+sandbox_seccomp_cfg_allow_openat_filename(sandbox_cfg_t **cfg, char *file)
+{
+  (void)cfg; (void)file;
+  return 0;
+}
+
+int
+sandbox_seccomp_cfg_allow_stat_filename(sandbox_cfg_t **cfg, char *file)
+{
+  (void)cfg; (void)file;
+  return 0;
+}
+
+int
+sandbox_seccomp_cfg_allow_chown_filename(sandbox_cfg_t **cfg, char *file)
+{
+  (void)cfg; (void)file;
+  return 0;
+}
+
+int
+sandbox_seccomp_cfg_allow_chmod_filename(sandbox_cfg_t **cfg, char *file)
+{
+  (void)cfg; (void)file;
+  return 0;
+}
+
+int
+sandbox_seccomp_cfg_allow_rename(sandbox_cfg_t **cfg, char *file1, char *file2)
+{
+  (void)cfg; (void)file1; (void)file2;
+  return 0;
+}
+
+int
+sandbox_seccomp_is_active(void)
+{
+  return 0;
+}
+
+void
+sandbox_seccomp_disable_getaddrinfo_cache(void)
+{
 }
 
 static int

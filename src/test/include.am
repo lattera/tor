@@ -42,8 +42,10 @@ TESTS += src/test/test src/test/test-slow src/test/test-memwipe \
 TEST_CHUTNEY_FLAVORS = basic-min bridges-min hs-v2-min hs-v3-min \
 	single-onion-v23
 # only run if we can ping6 ::1 (localhost)
-TEST_CHUTNEY_FLAVORS_IPV6 = bridges+ipv6-min ipv6-exit-min hs-v23-ipv6 \
-	single-onion-v23-ipv6
+# IPv6-only v3 single onion services don't work yet, so we don't test the
+# single-onion-v23-ipv6-md flavor
+TEST_CHUTNEY_FLAVORS_IPV6 = bridges+ipv6-min ipv6-exit-min hs-v23-ipv6-md \
+	single-onion-ipv6-md
 # only run if we can find a stable (or simply another) version of tor
 TEST_CHUTNEY_FLAVORS_MIXED = mixed+hs-v23
 
@@ -85,6 +87,7 @@ src_test_test_SOURCES = \
 	src/test/test_accounting.c \
 	src/test/test_addr.c \
 	src/test/test_address.c \
+	src/test/test_address_set.c \
 	src/test/test_buffers.c \
 	src/test/test_cell_formats.c \
 	src/test/test_cell_queue.c \
@@ -96,6 +99,7 @@ src_test_test_SOURCES = \
 	src/test/test_circuitmux.c \
 	src/test/test_circuitbuild.c \
 	src/test/test_circuituse.c \
+	src/test/test_circuitstats.c \
 	src/test/test_compat_libevent.c \
 	src/test/test_config.c \
 	src/test/test_connection.c \
@@ -111,6 +115,7 @@ src_test_test_SOURCES = \
 	src/test/test_dir.c \
 	src/test/test_dir_common.c \
 	src/test/test_dir_handle_get.c \
+	src/test/test_dos.c \
 	src/test/test_entryconn.c \
 	src/test/test_entrynodes.c \
 	src/test/test_guardfraction.c \
@@ -123,6 +128,7 @@ src_test_test_SOURCES = \
 	src/test/test_hs_service.c \
 	src/test/test_hs_client.c  \
 	src/test/test_hs_intropoint.c \
+	src/test/test_hs_control.c \
 	src/test/test_handles.c \
 	src/test/test_hs_cache.c \
 	src/test/test_hs_descriptor.c \
@@ -146,10 +152,10 @@ src_test_test_SOURCES = \
 	src/test/test_relaycell.c \
 	src/test/test_rendcache.c \
 	src/test/test_replay.c \
+	src/test/test_router.c \
 	src/test/test_routerkeys.c \
 	src/test/test_routerlist.c \
 	src/test/test_routerset.c \
-	src/test/test_rust.c \
 	src/test/test_scheduler.c \
 	src/test/test_shared_random.c \
 	src/test/test_socks.c \
@@ -353,3 +359,5 @@ EXTRA_DIST += \
 	src/test/test_workqueue_pipe2.sh \
 	src/test/test_workqueue_socketpair.sh
 
+test-rust:
+	$(TESTS_ENVIRONMENT) $(abs_top_srcdir)/src/test/test_rust.sh

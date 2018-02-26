@@ -25,6 +25,7 @@
 #include "geoip.h"
 #include "hs_cache.h"
 #include "hs_common.h"
+#include "hs_control.h"
 #include "hs_client.h"
 #include "main.h"
 #include "microdesc.h"
@@ -116,7 +117,8 @@ static void dir_routerdesc_download_failed(smartlist_t *failed,
                                            int was_extrainfo,
                                            int was_descriptor_digests);
 static void dir_microdesc_download_failed(smartlist_t *failed,
-                                          int status_code);
+                                          int status_code,
+                                          const char *dir_id);
 static int client_likes_consensus(const struct consensus_cache_entry_t *ent,
                                   const char *want_url);
 
@@ -469,7 +471,7 @@ directory_pick_generic_dirserver(dirinfo_type_t type, int pds_flags,
     log_warn(LD_BUG, "Called when we have UseBridges set.");
 
   if (should_use_directory_guards(options)) {
-    const node_t *node = guards_choose_dirguard(guard_state_out);
+    const node_t *node = guards_choose_dirguard(dir_purpose, guard_state_out);
     if (node)
       rs = node->rs;
   } else {
@@ -603,7 +605,7 @@ directory_get_from_dirserver,(
        * sort of dir fetch we'll be doing, so it won't return a bridge
        * that can't answer our question.
        */
-      const node_t *node = guards_choose_dirguard(&guard_state);
+      const node_t *node = guards_choose_dirguard(dir_purpose, &guard_state);
       if (node && node->ri) {
         /* every bridge has a routerinfo. */
         routerinfo_t *ri = node->ri;
@@ -1011,48 +1013,6 @@ directory_must_use_begindir(const or_options_t *options)
   return !public_server_mode(options);
 }
 
-struct directory_request_t {
-  /**
-   * These fields specify which directory we're contacting.  Routerstatus,
-   * if present, overrides the other fields.
-   *
-   * @{ */
-  tor_addr_port_t or_addr_port;
-  tor_addr_port_t dir_addr_port;
-  char digest[DIGEST_LEN];
-
-  const routerstatus_t *routerstatus;
-  /** @} */
-  /** One of DIR_PURPOSE_* other than DIR_PURPOSE_SERVER. Describes what
-   * kind of operation we'll be doing (upload/download), and of what kind
-   * of document. */
-  uint8_t dir_purpose;
-  /** One of ROUTER_PURPOSE_*; used for uploads and downloads of routerinfo
-   * and extrainfo docs.  */
-  uint8_t router_purpose;
-  /** Enum: determines whether to anonymize, and whether to use dirport or
-   * orport. */
-  dir_indirection_t indirection;
-  /** Alias to the variable part of the URL for this request */
-  const char *resource;
-  /** Alias to the payload to upload (if any) */
-  const char *payload;
-  /** Number of bytes to upload from payload</b> */
-  size_t payload_len;
-  /** Value to send in an if-modified-since header, or 0 for none. */
-  time_t if_modified_since;
-  /** Hidden-service-specific information v2. */
-  const rend_data_t *rend_query;
-  /** Extra headers to append to the request */
-  config_line_t *additional_headers;
-  /** Hidden-service-specific information for v3+. */
-  const hs_ident_dir_conn_t *hs_ident;
-  /** Used internally to directory.c: gets informed when the attempt to
-   * connect to the directory succeeds or fails, if that attempt bears on the
-   * directory's usability as a directory guard. */
-  circuit_guard_state_t *guard_state;
-};
-
 /** Evaluate the situation and decide if we should use an encrypted
  * "begindir-style" connection for this directory request.
  * 0) If there is no DirPort, yes.
@@ -1142,7 +1102,7 @@ directory_request_new(uint8_t dir_purpose)
  * Release all resources held by <b>req</b>.
  */
 void
-directory_request_free(directory_request_t *req)
+directory_request_free_(directory_request_t *req)
 {
   if (req == NULL)
     return;
@@ -1152,7 +1112,7 @@ directory_request_free(directory_request_t *req)
 /**
  * Set the address and OR port to use for this directory request.  If there is
  * no OR port, we'll have to connect over the dirport.  (If there are both,
- * the indirection setting determins which to use.)
+ * the indirection setting determines which to use.)
  */
 void
 directory_request_set_or_addr_port(directory_request_t *req,
@@ -1163,7 +1123,7 @@ directory_request_set_or_addr_port(directory_request_t *req,
 /**
  * Set the address and dirport to use for this directory request.  If there
  * is no dirport, we'll have to connect over the OR port.  (If there are both,
- * the indirection setting determins which to use.)
+ * the indirection setting determines which to use.)
  */
 void
 directory_request_set_dir_addr_port(directory_request_t *req,
@@ -2237,8 +2197,6 @@ load_downloaded_routers(const char *body, smartlist_t *which,
   return added;
 }
 
-static int handle_response_fetch_consensus(dir_connection_t *,
-                                           const response_handler_args_t *);
 static int handle_response_fetch_certificate(dir_connection_t *,
                                              const response_handler_args_t *);
 static int handle_response_fetch_status_vote(dir_connection_t *,
@@ -2247,8 +2205,6 @@ static int handle_response_fetch_detached_signatures(dir_connection_t *,
                                              const response_handler_args_t *);
 static int handle_response_fetch_desc(dir_connection_t *,
                                              const response_handler_args_t *);
-static int handle_response_fetch_microdesc(dir_connection_t *,
-                                           const response_handler_args_t *);
 static int handle_response_upload_dir(dir_connection_t *,
                                       const response_handler_args_t *);
 static int handle_response_upload_vote(dir_connection_t *,
@@ -2481,7 +2437,7 @@ connection_dir_client_reached_eof(dir_connection_t *conn)
      * and the date header.  (We used to check now-date_header, but that's
      * inaccurate if we spend a lot of time downloading.)
      */
-    apparent_skew = conn->base_.timestamp_lastwritten - date_header;
+    apparent_skew = conn->base_.timestamp_last_write_allowed - date_header;
     if (labs(apparent_skew)>ALLOW_DIRECTORY_TIME_SKEW) {
       int trusted = router_digest_is_trusted_dir(conn->identity_digest);
       clock_skew_warning(TO_CONN(conn), apparent_skew, trusted, LD_HTTP,
@@ -2585,7 +2541,7 @@ connection_dir_client_reached_eof(dir_connection_t *conn)
  * consensus document by checking the consensus, storing it, and marking
  * router requests as reachable.
  **/
-static int
+STATIC int
 handle_response_fetch_consensus(dir_connection_t *conn,
                                 const response_handler_args_t *args)
 {
@@ -2669,11 +2625,11 @@ handle_response_fetch_consensus(dir_connection_t *conn,
   /* If we launched other fetches for this consensus, cancel them. */
   connection_dir_close_consensus_fetches(conn, flavname);
 
-  /* launches router downloads as needed */
+  /* update the list of routers and directory guards */
   routers_update_all_from_networkstatus(now, 3);
   update_microdescs_from_networkstatus(now);
-  update_microdesc_downloads(now);
   directory_info_has_arrived(now, 0, 0);
+
   if (authdir_mode_v3(get_options())) {
     sr_act_post_consensus(
                      networkstatus_get_latest_consensus_by_flavor(FLAV_NS));
@@ -2889,7 +2845,7 @@ handle_response_fetch_desc(dir_connection_t *conn,
                                   conn->router_purpose,
                                   conn->base_.address)) {
         time_t now = approx_time();
-        directory_info_has_arrived(now, 0, 0);
+        directory_info_has_arrived(now, 0, 1);
       }
     }
   }
@@ -2916,7 +2872,7 @@ handle_response_fetch_desc(dir_connection_t *conn,
  * Handler function: processes a response to a request for a group of
  * microdescriptors
  **/
-static int
+STATIC int
 handle_response_fetch_microdesc(dir_connection_t *conn,
                                 const response_handler_args_t *args)
 {
@@ -2933,6 +2889,7 @@ handle_response_fetch_microdesc(dir_connection_t *conn,
            conn->base_.port);
   tor_assert(conn->requested_resource &&
              !strcmpstart(conn->requested_resource, "d/"));
+  tor_assert_nonfatal(!tor_mem_is_zero(conn->identity_digest, DIGEST_LEN));
   which = smartlist_new();
   dir_split_resource_into_fingerprints(conn->requested_resource+2,
                                        which, NULL,
@@ -2943,7 +2900,7 @@ handle_response_fetch_microdesc(dir_connection_t *conn,
              "soon.",
              status_code, escaped(reason), conn->base_.address,
              (int)conn->base_.port, conn->requested_resource);
-    dir_microdesc_download_failed(which, status_code);
+    dir_microdesc_download_failed(which, status_code, conn->identity_digest);
     SMARTLIST_FOREACH(which, char *, cp, tor_free(cp));
     smartlist_free(which);
     return 0;
@@ -2955,7 +2912,7 @@ handle_response_fetch_microdesc(dir_connection_t *conn,
                                   now, which);
     if (smartlist_len(which)) {
       /* Mark remaining ones as failed. */
-      dir_microdesc_download_failed(which, status_code);
+      dir_microdesc_download_failed(which, status_code, conn->identity_digest);
     }
     if (mds && smartlist_len(mds)) {
       control_event_bootstrap(BOOTSTRAP_STATUS_LOADING_DESCRIPTORS,
@@ -3134,10 +3091,19 @@ handle_response_fetch_hsdesc_v3(dir_connection_t *conn,
     /* We got something: Try storing it in the cache. */
     if (hs_cache_store_as_client(body, &conn->hs_ident->identity_pk) < 0) {
       log_warn(LD_REND, "Failed to store hidden service descriptor");
+      /* Fire control port FAILED event. */
+      hs_control_desc_event_failed(conn->hs_ident, conn->identity_digest,
+                                   "BAD_DESC");
+      hs_control_desc_event_content(conn->hs_ident, conn->identity_digest,
+                                    NULL);
     } else {
       log_info(LD_REND, "Stored hidden service descriptor successfully.");
       TO_CONN(conn)->purpose = DIR_PURPOSE_HAS_FETCHED_HSDESC;
       hs_client_desc_has_arrived(conn->hs_ident);
+      /* Fire control port RECEIVED event. */
+      hs_control_desc_event_received(conn->hs_ident, conn->identity_digest);
+      hs_control_desc_event_content(conn->hs_ident, conn->identity_digest,
+                                    body);
     }
     break;
   case 404:
@@ -3145,13 +3111,22 @@ handle_response_fetch_hsdesc_v3(dir_connection_t *conn,
      * tries to clean this conn up. */
     log_info(LD_REND, "Fetching hidden service v3 descriptor not found: "
                       "Retrying at another directory.");
-    /* TODO: Inform the control port */
+    /* Fire control port FAILED event. */
+    hs_control_desc_event_failed(conn->hs_ident, conn->identity_digest,
+                                 "NOT_FOUND");
+    hs_control_desc_event_content(conn->hs_ident, conn->identity_digest,
+                                  NULL);
     break;
   case 400:
     log_warn(LD_REND, "Fetching v3 hidden service descriptor failed: "
                       "http status 400 (%s). Dirserver didn't like our "
                       "query? Retrying at another directory.",
              escaped(reason));
+    /* Fire control port FAILED event. */
+    hs_control_desc_event_failed(conn->hs_ident, conn->identity_digest,
+                                 "QUERY_REJECTED");
+    hs_control_desc_event_content(conn->hs_ident, conn->identity_digest,
+                                  NULL);
     break;
   default:
     log_warn(LD_REND, "Fetching v3 hidden service descriptor failed: "
@@ -3159,6 +3134,11 @@ handle_response_fetch_hsdesc_v3(dir_connection_t *conn,
              "'%s:%d'. Retrying at another directory.",
              status_code, escaped(reason), TO_CONN(conn)->address,
              TO_CONN(conn)->port);
+    /* Fire control port FAILED event. */
+    hs_control_desc_event_failed(conn->hs_ident, conn->identity_digest,
+                                 "UNEXPECTED");
+    hs_control_desc_event_content(conn->hs_ident, conn->identity_digest,
+                                  NULL);
     break;
   }
 
@@ -3180,9 +3160,9 @@ handle_response_fetch_renddesc_v2(dir_connection_t *conn,
   const size_t body_len = args->body_len;
 
 #define SEND_HS_DESC_FAILED_EVENT(reason)                               \
-  (control_event_hs_descriptor_failed(conn->rend_data,                  \
-                                      conn->identity_digest,            \
-                                      reason))
+  (control_event_hsv2_descriptor_failed(conn->rend_data,                \
+                                        conn->identity_digest,          \
+                                        reason))
 #define SEND_HS_DESC_FAILED_CONTENT()                                   \
   (control_event_hs_descriptor_content(                                 \
                                 rend_data_get_address(conn->rend_data), \
@@ -3217,9 +3197,9 @@ handle_response_fetch_renddesc_v2(dir_connection_t *conn,
         /* success. notify pending connections about this. */
         log_info(LD_REND, "Successfully fetched v2 rendezvous "
                  "descriptor.");
-        control_event_hs_descriptor_received(service_id,
-                                             conn->rend_data,
-                                             conn->identity_digest);
+        control_event_hsv2_descriptor_received(service_id,
+                                               conn->rend_data,
+                                               conn->identity_digest);
         control_event_hs_descriptor_content(service_id,
                                             conn->requested_resource,
                                             conn->identity_digest,
@@ -3336,14 +3316,16 @@ handle_response_upload_hsdesc(dir_connection_t *conn,
   case 200:
     log_info(LD_REND, "Uploading hidden service descriptor: "
                       "finished with status 200 (%s)", escaped(reason));
-    /* XXX: Trigger control event. */
+    hs_control_desc_event_uploaded(conn->hs_ident, conn->identity_digest);
     break;
   case 400:
-    log_warn(LD_REND, "Uploading hidden service descriptor: http "
-                      "status 400 (%s) response from dirserver "
-                      "'%s:%d'. Malformed hidden service descriptor?",
-             escaped(reason), conn->base_.address, conn->base_.port);
-    /* XXX: Trigger control event. */
+    log_fn(LOG_PROTOCOL_WARN, LD_REND,
+           "Uploading hidden service descriptor: http "
+           "status 400 (%s) response from dirserver "
+           "'%s:%d'. Malformed hidden service descriptor?",
+           escaped(reason), conn->base_.address, conn->base_.port);
+    hs_control_desc_event_failed(conn->hs_ident, conn->identity_digest,
+                                 "UPLOAD_REJECTED");
     break;
   default:
     log_warn(LD_REND, "Uploading hidden service descriptor: http "
@@ -3351,7 +3333,8 @@ handle_response_upload_hsdesc(dir_connection_t *conn,
                       "'%s:%d').",
              status_code, escaped(reason), conn->base_.address,
              conn->base_.port);
-    /* XXX: Trigger control event. */
+    hs_control_desc_event_failed(conn->hs_ident, conn->identity_digest,
+                                 "UNEXPECTED");
     break;
   }
 
@@ -3430,7 +3413,7 @@ connection_dir_process_inbuf(dir_connection_t *conn)
 }
 
 /** We are closing a dir connection: If <b>dir_conn</b> is a dir connection
- *  that tried to fetch an HS descriptor, check if it successfuly fetched it,
+ *  that tried to fetch an HS descriptor, check if it successfully fetched it,
  *  or if we need to try again. */
 static void
 refetch_hsdesc_if_needed(dir_connection_t *dir_conn)
@@ -3517,63 +3500,47 @@ write_http_response_header_impl(dir_connection_t *conn, ssize_t length,
                            long cache_lifetime)
 {
   char date[RFC1123_TIME_LEN+1];
-  char tmp[1024];
-  char *cp;
   time_t now = time(NULL);
+  buf_t *buf = buf_new_with_capacity(1024);
 
   tor_assert(conn);
 
   format_rfc1123_time(date, now);
-  cp = tmp;
-  tor_snprintf(cp, sizeof(tmp),
-               "HTTP/1.0 200 OK\r\nDate: %s\r\n",
-               date);
-  cp += strlen(tmp);
+
+  buf_add_printf(buf, "HTTP/1.0 200 OK\r\nDate: %s\r\n", date);
   if (type) {
-    tor_snprintf(cp, sizeof(tmp)-(cp-tmp), "Content-Type: %s\r\n", type);
-    cp += strlen(cp);
+    buf_add_printf(buf, "Content-Type: %s\r\n", type);
   }
   if (!is_local_addr(&conn->base_.addr)) {
     /* Don't report the source address for a nearby/private connection.
      * Otherwise we tend to mis-report in cases where incoming ports are
      * being forwarded to a Tor server running behind the firewall. */
-    tor_snprintf(cp, sizeof(tmp)-(cp-tmp),
-                 X_ADDRESS_HEADER "%s\r\n", conn->base_.address);
-    cp += strlen(cp);
+    buf_add_printf(buf, X_ADDRESS_HEADER "%s\r\n", conn->base_.address);
   }
   if (encoding) {
-    tor_snprintf(cp, sizeof(tmp)-(cp-tmp),
-                 "Content-Encoding: %s\r\n", encoding);
-    cp += strlen(cp);
+    buf_add_printf(buf, "Content-Encoding: %s\r\n", encoding);
   }
   if (length >= 0) {
-    tor_snprintf(cp, sizeof(tmp)-(cp-tmp),
-                 "Content-Length: %ld\r\n", (long)length);
-    cp += strlen(cp);
+    buf_add_printf(buf, "Content-Length: %ld\r\n", (long)length);
   }
   if (cache_lifetime > 0) {
     char expbuf[RFC1123_TIME_LEN+1];
     format_rfc1123_time(expbuf, (time_t)(now + cache_lifetime));
     /* We could say 'Cache-control: max-age=%d' here if we start doing
      * http/1.1 */
-    tor_snprintf(cp, sizeof(tmp)-(cp-tmp),
-                 "Expires: %s\r\n", expbuf);
-    cp += strlen(cp);
+    buf_add_printf(buf, "Expires: %s\r\n", expbuf);
   } else if (cache_lifetime == 0) {
     /* We could say 'Cache-control: no-cache' here if we start doing
      * http/1.1 */
-    strlcpy(cp, "Pragma: no-cache\r\n", sizeof(tmp)-(cp-tmp));
-    cp += strlen(cp);
+    buf_add_string(buf, "Pragma: no-cache\r\n");
   }
   if (extra_headers) {
-    strlcpy(cp, extra_headers, sizeof(tmp)-(cp-tmp));
-    cp += strlen(cp);
+    buf_add_string(buf, extra_headers);
   }
-  if (sizeof(tmp)-(cp-tmp) > 3)
-    memcpy(cp, "\r\n", 3);
-  else
-    tor_assert(0);
-  connection_buf_add(tmp, strlen(tmp), TO_CONN(conn));
+  buf_add_string(buf, "\r\n");
+
+  connection_buf_add_buf(TO_CONN(conn), buf);
+  buf_free(buf);
 }
 
 /** As write_http_response_header_impl, but sets encoding and content-typed
@@ -4069,7 +4036,7 @@ find_best_diff(const smartlist_t *digests, int flav,
 }
 
 /** Lookup the cached consensus document by the flavor found in <b>flav</b>.
- * The prefered set of compression methods should be listed in the
+ * The preferred set of compression methods should be listed in the
  * <b>compression_methods</b> bitfield. The compression method chosen (if any)
  * is stored in <b>compression_used_out</b>. */
 static struct consensus_cache_entry_t *
@@ -4981,7 +4948,7 @@ handle_get_robots(dir_connection_t *conn, const get_handler_args_t *args)
 
 /* Given the <b>url</b> from a POST request, try to extract the version number
  * using the provided <b>prefix</b>. The version should be after the prefix and
- * ending with the seperator "/". For instance:
+ * ending with the separator "/". For instance:
  *      /tor/hs/3/publish
  *
  * On success, <b>end_pos</b> points to the position right after the version
@@ -5378,12 +5345,13 @@ find_dl_schedule(const download_status_t *dls, const or_options_t *options)
         }
       }
     case DL_SCHED_BRIDGE:
-      /* A bridge client downloading bridge descriptors */
-      if (options->UseBridges && any_bridge_descriptors_known()) {
-        /* A bridge client with one or more running bridges */
+      if (options->UseBridges && num_bridges_usable(0) > 0) {
+        /* A bridge client that is sure that one or more of its bridges are
+         * running can afford to wait longer to update bridge descriptors. */
         return options->TestingBridgeDownloadSchedule;
       } else {
-        /* A bridge client with no running bridges */
+        /* A bridge client which might have no running bridges, must try to
+         * get bridge descriptors straight away. */
         return options->TestingBridgeBootstrapDownloadSchedule;
       }
     default:
@@ -5421,54 +5389,68 @@ find_dl_min_and_max_delay(download_status_t *dls, const or_options_t *options,
     *max = INT_MAX;
 }
 
-/** Advance one delay step.  The algorithm is to use the previous delay to
- * compute an increment, we construct a value uniformly at random between
- * delay+1 and (delay*(DIR_DEFAULT_RANDOM_MULTIPLIER+1))+1 (or
- * DIR_TEST_NET_RANDOM_MULTIPLIER in test networks).
+/** As next_random_exponential_delay() below, but does not compute a random
+ * value. Instead, compute the range of values that
+ * next_random_exponential_delay() should use when computing its random value.
+ * Store the low bound into *<b>low_bound_out</b>, and the high bound into
+ * *<b>high_bound_out</b>.  Guarantees that the low bound is strictly less
+ * than the high bound. */
+STATIC void
+next_random_exponential_delay_range(int *low_bound_out,
+                                    int *high_bound_out,
+                                    int delay,
+                                    int base_delay)
+{
+  // This is the "decorrelated jitter" approach, from
+  //    https://www.awsarchitectureblog.com/2015/03/backoff.html
+  // The formula is
+  //    sleep = min(cap, random_between(base, sleep * 3))
+
+  const int delay_times_3 = delay < INT_MAX/3 ? delay * 3 : INT_MAX;
+  *low_bound_out = base_delay;
+  if (delay_times_3 > base_delay) {
+    *high_bound_out = delay_times_3;
+  } else {
+    *high_bound_out = base_delay+1;
+  }
+}
+
+/** Advance one delay step.  The algorithm will generate a random delay,
+ * such that each failure is possibly (random) longer than the ones before.
+ *
  * We then clamp that value to be no larger than max_delay, and return it.
+ *
+ * The <b>base_delay</b> parameter is lowest possible delay time (can't be
+ * zero); the <b>backoff_position</b> parameter is the number of times we've
+ * generated a delay; and the <b>delay</b> argument is the most recently used
+ * delay.
  *
  * Requires that delay is less than INT_MAX, and delay is in [0,max_delay].
  */
 STATIC int
-next_random_exponential_delay(int delay, int max_delay)
+next_random_exponential_delay(int delay,
+                              int base_delay,
+                              int max_delay)
 {
   /* Check preconditions */
   if (BUG(max_delay < 0))
     max_delay = 0;
   if (BUG(delay > max_delay))
     delay = max_delay;
-  if (delay == INT_MAX)
-    return INT_MAX; /* prevent overflow */
   if (BUG(delay < 0))
     delay = 0;
 
-  /* How much are we willing to add to the delay? */
-  int max_increment;
-  int multiplier = DIR_DEFAULT_RANDOM_MULTIPLIER;
-  if (get_options()->TestingTorNetwork) {
-    /* Decrease the multiplier in testing networks. This reduces the variance,
-     * so that bootstrap is more reliable. */
-    multiplier = DIR_TEST_NET_RANDOM_MULTIPLIER;
-  }
+  if (base_delay < 1)
+    base_delay = 1;
 
-  if (delay && delay < (INT_MAX-1) / multiplier) {
-    max_increment = delay * multiplier;
-  } else if (delay) {
-    max_increment = INT_MAX-1;
-  } else {
-    max_increment = 1;
-  }
+  int low_bound=0, high_bound=max_delay;
 
-  if (BUG(max_increment < 1))
-    max_increment = 1;
+  next_random_exponential_delay_range(&low_bound, &high_bound,
+                                      delay, base_delay);
 
-  /* the + 1 here is so that we always wait longer than last time. */
-  int increment = crypto_rand_int(max_increment)+1;
+  int rand_delay = crypto_rand_int_range(low_bound, high_bound);
 
-  if (increment < max_delay - delay)
-    return delay + increment;
-  else
-    return max_delay;
+  return MIN(rand_delay, max_delay);
 }
 
 /** Find the current delay for dls based on schedule or min_delay/
@@ -5517,7 +5499,7 @@ download_status_schedule_get_delay(download_status_t *dls,
 
       while (dls->last_backoff_position < dls_schedule_position) {
         /* Do one increment step */
-        delay = next_random_exponential_delay(delay, max_delay);
+        delay = next_random_exponential_delay(delay, min_delay, max_delay);
         /* Update our position */
         ++(dls->last_backoff_position);
       }
@@ -5797,13 +5779,14 @@ dir_routerdesc_download_failed(smartlist_t *failed, int status_code,
    * every 10 or 60 seconds (FOO_DESCRIPTOR_RETRY_INTERVAL) in main.c. */
 }
 
-/** Called when a connection to download microdescriptors has failed in whole
- * or in part. <b>failed</b> is a list of every microdesc digest we didn't
- * get. <b>status_code</b> is the http status code we received. Reschedule the
- * microdesc downloads as appropriate. */
+/** Called when a connection to download microdescriptors from relay with
+ * <b>dir_id</b> has failed in whole or in part. <b>failed</b> is a list
+ * of every microdesc digest we didn't get. <b>status_code</b> is the http
+ * status code we received. Reschedule the microdesc downloads as
+ * appropriate. */
 static void
 dir_microdesc_download_failed(smartlist_t *failed,
-                              int status_code)
+                              int status_code, const char *dir_id)
 {
   networkstatus_t *consensus
     = networkstatus_get_latest_consensus_by_flavor(FLAV_MICRODESC);
@@ -5814,17 +5797,26 @@ dir_microdesc_download_failed(smartlist_t *failed,
 
   if (! consensus)
     return;
+
+  /* We failed to fetch a microdescriptor from 'dir_id', note it down
+   * so that we don't try the same relay next time... */
+  microdesc_note_outdated_dirserver(dir_id);
+
   SMARTLIST_FOREACH_BEGIN(failed, const char *, d) {
     rs = router_get_mutable_consensus_status_by_descriptor_digest(consensus,d);
     if (!rs)
       continue;
     dls = &rs->dl_status;
     if (dls->n_download_failures >=
-        get_options()->TestingMicrodescMaxDownloadTries)
+        get_options()->TestingMicrodescMaxDownloadTries) {
       continue;
-    {
+    }
+
+    { /* Increment the failure count for this md fetch */
       char buf[BASE64_DIGEST256_LEN+1];
       digest256_to_base64(buf, d);
+      log_info(LD_DIR, "Failed to download md %s from %s",
+               buf, hex_str(dir_id, DIGEST_LEN));
       download_status_increment_failure(dls, status_code, buf,
                                         server, now);
     }

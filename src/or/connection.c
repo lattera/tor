@@ -1,4 +1,4 @@
-/* Copyright (c) 2001 Matej Pfajfar.
+ /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
  * Copyright (c) 2007-2017, The Tor Project, Inc. */
@@ -80,6 +80,7 @@
 #include "dirserv.h"
 #include "dns.h"
 #include "dnsserv.h"
+#include "dos.h"
 #include "entrynodes.h"
 #include "ext_orport.h"
 #include "geoip.h"
@@ -100,7 +101,6 @@
 #include "transports.h"
 #include "routerparse.h"
 #include "sandbox.h"
-#include "transports.h"
 
 #ifdef HAVE_PWD_H
 #include <pwd.h>
@@ -118,8 +118,6 @@ static connection_t *connection_listener_new(
                                const port_cfg_t *portcfg);
 static void connection_init(time_t now, connection_t *conn, int type,
                             int socket_family);
-static int connection_init_accepted_conn(connection_t *conn,
-                          const listener_connection_t *listener);
 static int connection_handle_listener_read(connection_t *conn, int new_type);
 static int connection_bucket_should_increase(int bucket,
                                              or_connection_t *conn);
@@ -337,8 +335,6 @@ entry_connection_new(int type, int socket_family)
     entry_conn->entry_cfg.ipv4_traffic = 1;
   else if (socket_family == AF_INET6)
     entry_conn->entry_cfg.ipv6_traffic = 1;
-  else if (socket_family == AF_UNIX)
-    entry_conn->is_socks_socket = 1;
   return entry_conn;
 }
 
@@ -463,8 +459,8 @@ connection_init(time_t now, connection_t *conn, int type, int socket_family)
   }
 
   conn->timestamp_created = now;
-  conn->timestamp_lastread = now;
-  conn->timestamp_lastwritten = now;
+  conn->timestamp_last_read_allowed = now;
+  conn->timestamp_last_write_allowed = now;
 }
 
 /** Create a link between <b>conn_a</b> and <b>conn_b</b>. */
@@ -501,7 +497,7 @@ conn_listener_type_supports_af_unix(int type)
  * if <b>conn</b> is an OR or OP connection.
  */
 STATIC void
-connection_free_(connection_t *conn)
+connection_free_minimal(connection_t *conn)
 {
   void *mem;
   size_t memlen;
@@ -677,7 +673,7 @@ connection_free_(connection_t *conn)
 /** Make sure <b>conn</b> isn't in any of the global conn lists; then free it.
  */
 MOCK_IMPL(void,
-connection_free,(connection_t *conn))
+connection_free_,(connection_t *conn))
 {
   if (!conn)
     return;
@@ -705,8 +701,15 @@ connection_free,(connection_t *conn))
                                                   "connection_free");
   }
 #endif /* 1 */
+
+  /* Notify the circuit creation DoS mitigation subsystem that an OR client
+   * connection has been closed. And only do that if we track it. */
+  if (conn->type == CONN_TYPE_OR) {
+    dos_close_client_conn(TO_OR_CONN(conn));
+  }
+
   connection_unregister_events(conn);
-  connection_free_(conn);
+  connection_free_minimal(conn);
 }
 
 /**
@@ -769,6 +772,10 @@ connection_close_immediate(connection_t *conn)
   }
 
   connection_unregister_events(conn);
+
+  /* Prevent the event from getting unblocked. */
+  conn->read_blocked_on_bw =
+    conn->write_blocked_on_bw = 0;
 
   if (SOCKET_OK(conn->s))
     tor_close_socket(conn->s);
@@ -851,7 +858,7 @@ connection_mark_for_close_internal_, (connection_t *conn,
   /* in case we're going to be held-open-til-flushed, reset
    * the number of seconds since last successful write, so
    * we get our whole 15 seconds */
-  conn->timestamp_lastwritten = time(NULL);
+  conn->timestamp_last_write_allowed = time(NULL);
 }
 
 /** Find each connection that has hold_open_until_flushed set to
@@ -873,7 +880,7 @@ connection_expire_held_open(void)
      */
     if (conn->hold_open_until_flushed) {
       tor_assert(conn->marked_for_close);
-      if (now - conn->timestamp_lastwritten >= 15) {
+      if (now - conn->timestamp_last_write_allowed >= 15) {
         int severity;
         if (conn->type == CONN_TYPE_EXIT ||
             (conn->type == CONN_TYPE_DIR &&
@@ -1251,15 +1258,12 @@ connection_listener_new(const struct sockaddr *listensockaddr,
       gotPort = usePort;
     } else {
       tor_addr_t addr2;
-      struct sockaddr_storage ss;
-      socklen_t ss_len=sizeof(ss);
-      if (getsockname(s, (struct sockaddr*)&ss, &ss_len)<0) {
+      if (tor_addr_from_getsockname(&addr2, s)<0) {
         log_warn(LD_NET, "getsockname() couldn't learn address for %s: %s",
                  conn_type_to_string(type),
                  tor_socket_strerror(tor_socket_errno(s)));
         gotPort = 0;
       }
-      tor_addr_from_sockaddr(&addr2, (struct sockaddr*)&ss, &gotPort);
     }
 #ifdef HAVE_SYS_UN_H
   /*
@@ -1606,6 +1610,14 @@ connection_handle_listener_read(connection_t *conn, int new_type)
         return 0;
       }
     }
+    if (new_type == CONN_TYPE_OR) {
+      /* Assess with the connection DoS mitigation subsystem if this address
+       * can open a new connection. */
+      if (dos_conn_addr_get_defense_type(&addr) == DOS_CONN_DEFENSE_CLOSE) {
+        tor_close_socket(news);
+        return 0;
+      }
+    }
 
     newconn = connection_new(new_type, conn->socket_family);
     newconn->s = news;
@@ -1662,11 +1674,15 @@ connection_handle_listener_read(connection_t *conn, int new_type)
 }
 
 /** Initialize states for newly accepted connection <b>conn</b>.
+ *
  * If conn is an OR, start the TLS handshake.
+ *
  * If conn is a transparent AP, get its original destination
  * and place it in circuit_wait.
+ *
+ * The <b>listener</b> parameter is only used for AP connections.
  */
-static int
+int
 connection_init_accepted_conn(connection_t *conn,
                               const listener_connection_t *listener)
 {
@@ -1746,7 +1762,11 @@ connection_connect_sockaddr,(connection_t *conn,
 
   if (get_options()->DisableNetwork) {
     /* We should never even try to connect anyplace if DisableNetwork is set.
-     * Warn if we do, and refuse to make the connection. */
+     * Warn if we do, and refuse to make the connection.
+     *
+     * We only check DisableNetwork here, not we_are_hibernating(), since
+     * we'll still try to fulfill client requests sometimes in the latter case
+     * (if it is soft hibernation) */
     static ratelim_t disablenet_violated = RATELIM_INIT(30*60);
     *socket_error = SOCK_ERRNO(ENETUNREACH);
     log_fn_ratelim(&disablenet_violated, LOG_WARN, LD_BUG,
@@ -3394,7 +3414,7 @@ connection_handle_read_impl(connection_t *conn)
   if (conn->marked_for_close)
     return 0; /* do nothing */
 
-  conn->timestamp_lastread = approx_time();
+  conn->timestamp_last_read_allowed = approx_time();
 
   switch (conn->type) {
     case CONN_TYPE_OR_LISTENER:
@@ -3751,13 +3771,51 @@ connection_outbuf_too_full(connection_t *conn)
   return (conn->outbuf_flushlen > 10*CELL_PAYLOAD_SIZE);
 }
 
+/**
+ * On Windows Vista and Windows 7, tune the send buffer size according to a
+ * hint from the OS.
+ *
+ * This should help fix slow upload rates.
+ */
+static void
+
+update_send_buffer_size(tor_socket_t sock)
+{
+#ifdef _WIN32
+  /* We only do this on Vista and 7, because earlier versions of Windows
+   * don't have the SIO_IDEAL_SEND_BACKLOG_QUERY functionality, and on
+   * later versions it isn't necessary. */
+  static int isVistaOr7 = -1;
+  if (isVistaOr7 == -1) {
+    isVistaOr7 = 0;
+    OSVERSIONINFO osvi = { 0 };
+    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+    GetVersionEx(&osvi);
+    if (osvi.dwMajorVersion == 6 && osvi.dwMinorVersion < 2)
+      isVistaOr7 = 1;
+  }
+  if (!isVistaOr7)
+    return;
+  if (get_options()->ConstrainedSockets)
+    return;
+  ULONG isb = 0;
+  DWORD bytesReturned = 0;
+  if (!WSAIoctl(sock, SIO_IDEAL_SEND_BACKLOG_QUERY, NULL, 0,
+      &isb, sizeof(isb), &bytesReturned, NULL, NULL)) {
+    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*)&isb, sizeof(isb));
+  }
+#else
+  (void) sock;
+#endif
+}
+
 /** Try to flush more bytes onto <b>conn</b>-\>s.
  *
  * This function gets called either from conn_write_callback() in main.c
  * when libevent tells us that conn wants to write, or below
  * from connection_buf_add() when an entire TLS record is ready.
  *
- * Update <b>conn</b>-\>timestamp_lastwritten to now, and call flush_buf
+ * Update <b>conn</b>-\>timestamp_last_write_allowed to now, and call flush_buf
  * or flush_buf_tls appropriately. If it succeeds and there are no more
  * more bytes on <b>conn</b>-\>outbuf, then call connection_finished_flushing
  * on it too.
@@ -3790,7 +3848,7 @@ connection_handle_write_impl(connection_t *conn, int force)
     return 0;
   }
 
-  conn->timestamp_lastwritten = now;
+  conn->timestamp_last_write_allowed = now;
 
   /* Sometimes, "writable" means "connected". */
   if (connection_state_is_connecting(conn)) {
@@ -3869,6 +3927,9 @@ connection_handle_write_impl(connection_t *conn, int force)
     result = buf_flush_to_tls(conn->outbuf, or_conn->tls,
                            max_to_write, &conn->outbuf_flushlen);
 
+    if (result >= 0)
+      update_send_buffer_size(conn->s);
+
     /* If we just flushed the last bytes, tell the channel on the
      * or_conn to check if it needs to geoip_change_dirreq_state() */
     /* XXXX move this to flushed_some or finished_flushing -NM */
@@ -3943,6 +4004,7 @@ connection_handle_write_impl(connection_t *conn, int force)
       connection_mark_for_close(conn);
       return -1;
     }
+    update_send_buffer_size(conn->s);
     n_written = (size_t) result;
   }
 
@@ -4045,6 +4107,68 @@ connection_flush(connection_t *conn)
   return connection_handle_write(conn, 1);
 }
 
+/** Helper for connection_write_to_buf_impl and connection_write_buf_to_buf:
+ *
+ * Return true iff it is okay to queue bytes on <b>conn</b>'s outbuf for
+ * writing.
+ */
+static int
+connection_may_write_to_buf(connection_t *conn)
+{
+  /* if it's marked for close, only allow write if we mean to flush it */
+  if (conn->marked_for_close && !conn->hold_open_until_flushed)
+    return 0;
+
+  return 1;
+}
+
+/** Helper for connection_write_to_buf_impl and connection_write_buf_to_buf:
+ *
+ * Called when an attempt to add bytes on <b>conn</b>'s outbuf has failed;
+ * mark the connection and warn as appropriate.
+ */
+static void
+connection_write_to_buf_failed(connection_t *conn)
+{
+  if (CONN_IS_EDGE(conn)) {
+    /* if it failed, it means we have our package/delivery windows set
+       wrong compared to our max outbuf size. close the whole circuit. */
+    log_warn(LD_NET,
+             "write_to_buf failed. Closing circuit (fd %d).", (int)conn->s);
+    circuit_mark_for_close(circuit_get_by_edge_conn(TO_EDGE_CONN(conn)),
+                           END_CIRC_REASON_INTERNAL);
+  } else if (conn->type == CONN_TYPE_OR) {
+    or_connection_t *orconn = TO_OR_CONN(conn);
+    log_warn(LD_NET,
+             "write_to_buf failed on an orconn; notifying of error "
+             "(fd %d)", (int)(conn->s));
+    connection_or_close_for_error(orconn, 0);
+  } else {
+    log_warn(LD_NET,
+             "write_to_buf failed. Closing connection (fd %d).",
+             (int)conn->s);
+    connection_mark_for_close(conn);
+  }
+}
+
+/** Helper for connection_write_to_buf_impl and connection_write_buf_to_buf:
+ *
+ * Called when an attempt to add bytes on <b>conn</b>'s outbuf has succeeded:
+ * record the number of bytes added.
+ */
+static void
+connection_write_to_buf_commit(connection_t *conn, size_t len)
+{
+  /* If we receive optimistic data in the EXIT_CONN_STATE_RESOLVING
+   * state, we don't want to try to write it right away, since
+   * conn->write_event won't be set yet.  Otherwise, write data from
+   * this conn as the socket is available. */
+  if (conn->write_event) {
+    connection_start_writing(conn);
+  }
+  conn->outbuf_flushlen += len;
+}
+
 /** Append <b>len</b> bytes of <b>string</b> onto <b>conn</b>'s
  * outbuf, and ask it to start writing.
  *
@@ -4059,58 +4183,52 @@ connection_write_to_buf_impl_,(const char *string, size_t len,
 {
   /* XXXX This function really needs to return -1 on failure. */
   int r;
-  size_t old_datalen;
   if (!len && !(zlib<0))
     return;
-  /* if it's marked for close, only allow write if we mean to flush it */
-  if (conn->marked_for_close && !conn->hold_open_until_flushed)
+
+  if (!connection_may_write_to_buf(conn))
     return;
 
-  old_datalen = buf_datalen(conn->outbuf);
+  size_t written;
+
   if (zlib) {
+    size_t old_datalen = buf_datalen(conn->outbuf);
     dir_connection_t *dir_conn = TO_DIR_CONN(conn);
     int done = zlib < 0;
     CONN_LOG_PROTECT(conn, r = buf_add_compress(conn->outbuf,
-                                                     dir_conn->compress_state,
-                                                     string, len, done));
+                                                dir_conn->compress_state,
+                                                string, len, done));
+    written = buf_datalen(conn->outbuf) - old_datalen;
   } else {
     CONN_LOG_PROTECT(conn, r = buf_add(conn->outbuf, string, len));
+    written = len;
   }
   if (r < 0) {
-    if (CONN_IS_EDGE(conn)) {
-      /* if it failed, it means we have our package/delivery windows set
-         wrong compared to our max outbuf size. close the whole circuit. */
-      log_warn(LD_NET,
-               "write_to_buf failed. Closing circuit (fd %d).", (int)conn->s);
-      circuit_mark_for_close(circuit_get_by_edge_conn(TO_EDGE_CONN(conn)),
-                             END_CIRC_REASON_INTERNAL);
-    } else if (conn->type == CONN_TYPE_OR) {
-      or_connection_t *orconn = TO_OR_CONN(conn);
-      log_warn(LD_NET,
-               "write_to_buf failed on an orconn; notifying of error "
-               "(fd %d)", (int)(conn->s));
-      connection_or_close_for_error(orconn, 0);
-    } else {
-      log_warn(LD_NET,
-               "write_to_buf failed. Closing connection (fd %d).",
-               (int)conn->s);
-      connection_mark_for_close(conn);
-    }
+    connection_write_to_buf_failed(conn);
     return;
   }
+  connection_write_to_buf_commit(conn, written);
+}
 
-  /* If we receive optimistic data in the EXIT_CONN_STATE_RESOLVING
-   * state, we don't want to try to write it right away, since
-   * conn->write_event won't be set yet.  Otherwise, write data from
-   * this conn as the socket is available. */
-  if (conn->write_event) {
-    connection_start_writing(conn);
-  }
-  if (zlib) {
-    conn->outbuf_flushlen += buf_datalen(conn->outbuf) - old_datalen;
-  } else {
-    conn->outbuf_flushlen += len;
-  }
+/**
+ * Add all bytes from <b>buf</b> to <b>conn</b>'s outbuf, draining them
+ * from <b>buf</b>. (If the connection is marked and will soon be closed,
+ * nothing is drained.)
+ */
+void
+connection_buf_add_buf(connection_t *conn, buf_t *buf)
+{
+  tor_assert(conn);
+  tor_assert(buf);
+  size_t len = buf_datalen(buf);
+  if (len == 0)
+    return;
+
+  if (!connection_may_write_to_buf(conn))
+    return;
+
+  buf_move_all(conn->outbuf, buf);
+  connection_write_to_buf_commit(conn, len);
 }
 
 #define CONN_GET_ALL_TEMPLATE(var, test) \
@@ -4126,7 +4244,7 @@ connection_write_to_buf_impl_,(const char *string, size_t len,
 
 /* Return a list of connections that aren't close and matches the given type
  * and state. The returned list can be empty and must be freed using
- * smartlist_free(). The caller does NOT have owernship of the objects in the
+ * smartlist_free(). The caller does NOT have ownership of the objects in the
  * list so it must not free them nor reference them as they can disappear. */
 smartlist_t *
 connection_list_by_type_state(int type, int state)
@@ -4136,7 +4254,7 @@ connection_list_by_type_state(int type, int state)
 
 /* Return a list of connections that aren't close and matches the given type
  * and purpose. The returned list can be empty and must be freed using
- * smartlist_free(). The caller does NOT have owernship of the objects in the
+ * smartlist_free(). The caller does NOT have ownership of the objects in the
  * list so it must not free them nor reference them as they can disappear. */
 smartlist_t *
 connection_list_by_type_purpose(int type, int purpose)
@@ -4406,8 +4524,6 @@ alloc_http_authenticator(const char *authenticator)
 static void
 client_check_address_changed(tor_socket_t sock)
 {
-  struct sockaddr_storage out_sockaddr;
-  socklen_t out_addr_len = (socklen_t) sizeof(out_sockaddr);
   tor_addr_t out_addr, iface_addr;
   tor_addr_t **last_interface_ip_ptr;
   sa_family_t family;
@@ -4415,13 +4531,12 @@ client_check_address_changed(tor_socket_t sock)
   if (!outgoing_addrs)
     outgoing_addrs = smartlist_new();
 
-  if (getsockname(sock, (struct sockaddr*)&out_sockaddr, &out_addr_len)<0) {
+  if (tor_addr_from_getsockname(&out_addr, sock) < 0) {
     int e = tor_socket_errno(sock);
     log_warn(LD_NET, "getsockname() to check for address change failed: %s",
              tor_socket_strerror(e));
     return;
   }
-  tor_addr_from_sockaddr(&out_addr, (struct sockaddr*)&out_sockaddr, NULL);
   family = tor_addr_family(&out_addr);
 
   if (family == AF_INET)
@@ -5173,8 +5288,8 @@ proxy_type_to_string(int proxy_type)
   return NULL; /*Unreached*/
 }
 
-/** Call connection_free_() on every connection in our array, and release all
- * storage held by connection.c.
+/** Call connection_free_minimal() on every connection in our array, and
+ * release all storage held by connection.c.
  *
  * Don't do the checks in connection_free(), because they will
  * fail.
@@ -5198,7 +5313,8 @@ connection_free_all(void)
   /* Clear out our list of broken connections */
   clear_broken_connection_map(0);
 
-  SMARTLIST_FOREACH(conns, connection_t *, conn, connection_free_(conn));
+  SMARTLIST_FOREACH(conns, connection_t *, conn,
+                    connection_free_minimal(conn));
 
   if (outgoing_addrs) {
     SMARTLIST_FOREACH(outgoing_addrs, tor_addr_t *, addr, tor_free(addr));

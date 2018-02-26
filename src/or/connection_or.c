@@ -505,7 +505,7 @@ var_cell_copy(const var_cell_t *src)
 
 /** Release all space held by <b>cell</b>. */
 void
-var_cell_free(var_cell_t *cell)
+var_cell_free_(var_cell_t *cell)
 {
   tor_free(cell);
 }
@@ -592,8 +592,9 @@ connection_or_flushed_some(or_connection_t *conn)
 {
   size_t datalen;
 
-  /* The channel will want to update its estimated queue size */
-  channel_update_xmit_queue_size(TLS_CHAN_TO_BASE(conn->chan));
+  /* Update the channel's active timestamp if there is one */
+  if (conn->chan)
+    channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
 
   /* If we're under the low water mark, add cells until we're just over the
    * high water mark. */
@@ -655,6 +656,11 @@ connection_or_finished_flushing(or_connection_t *conn)
       tor_fragile_assert();
       return -1;
   }
+
+  /* Update the channel's active timestamp if there is one */
+  if (conn->chan)
+    channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
+
   return 0;
 }
 
@@ -699,7 +705,6 @@ connection_or_finished_connecting(or_connection_t *or_conn)
 void
 connection_or_about_to_close(or_connection_t *or_conn)
 {
-  time_t now = time(NULL);
   connection_t *conn = TO_CONN(or_conn);
 
   /* Tell the controlling channel we're closed */
@@ -719,7 +724,6 @@ connection_or_about_to_close(or_connection_t *or_conn)
     if (connection_or_nonopen_was_started_here(or_conn)) {
       const or_options_t *options = get_options();
       connection_or_note_state_when_broken(or_conn);
-      rep_hist_note_connect_failed(or_conn->identity_digest, now);
       /* Tell the new guard API about the channel failure */
       entry_guard_chan_failed(TLS_CHAN_TO_BASE(or_conn->chan));
       if (conn->state >= OR_CONN_STATE_TLS_HANDSHAKING) {
@@ -735,11 +739,9 @@ connection_or_about_to_close(or_connection_t *or_conn)
   } else if (conn->hold_open_until_flushed) {
     /* We only set hold_open_until_flushed when we're intentionally
      * closing a connection. */
-    rep_hist_note_disconnect(or_conn->identity_digest, now);
     control_event_or_conn_status(or_conn, OR_CONN_EVENT_CLOSED,
                 tls_error_to_orconn_end_reason(or_conn->tls_error));
   } else if (!tor_digest_is_zero(or_conn->identity_digest)) {
-    rep_hist_note_connection_died(or_conn->identity_digest, now);
     control_event_or_conn_status(or_conn, OR_CONN_EVENT_CLOSED,
                 tls_error_to_orconn_end_reason(or_conn->tls_error));
   }
@@ -886,7 +888,7 @@ connection_or_check_canonicity(or_connection_t *conn, int started_here)
 
   const node_t *r = node_get_by_id(id_digest);
   if (r &&
-      node_supports_ed25519_link_authentication(r) &&
+      node_supports_ed25519_link_authentication(r, 1) &&
       ! node_ed25519_id_matches(r, ed_id)) {
     /* If this node is capable of proving an ed25519 ID,
      * we can't call this a canonical connection unless both IDs match. */
@@ -965,6 +967,36 @@ connection_or_mark_bad_for_new_circs(or_connection_t *or_conn)
  * too old for new circuits? */
 #define TIME_BEFORE_OR_CONN_IS_TOO_OLD (60*60*24*7)
 
+/** Expire an or_connection if it is too old. Helper for
+ * connection_or_group_set_badness_ and fast path for
+ * channel_rsa_id_group_set_badness.
+ *
+ * Returns 1 if the connection was already expired, else 0.
+ */
+int
+connection_or_single_set_badness_(time_t now,
+                                  or_connection_t *or_conn,
+                                  int force)
+{
+  /* XXXX this function should also be about channels? */
+  if (or_conn->base_.marked_for_close ||
+      connection_or_is_bad_for_new_circs(or_conn))
+    return 1;
+
+  if (force ||
+      or_conn->base_.timestamp_created + TIME_BEFORE_OR_CONN_IS_TOO_OLD
+        < now) {
+    log_info(LD_OR,
+             "Marking OR conn to %s:%d as too old for new circuits "
+             "(fd "TOR_SOCKET_T_FORMAT", %d secs old).",
+             or_conn->base_.address, or_conn->base_.port, or_conn->base_.s,
+             (int)(now - or_conn->base_.timestamp_created));
+    connection_or_mark_bad_for_new_circs(or_conn);
+  }
+
+  return 0;
+}
+
 /** Given a list of all the or_connections with a given
  * identity, set elements of that list as is_bad_for_new_circs as
  * appropriate. Helper for connection_or_set_bad_connections().
@@ -995,19 +1027,8 @@ connection_or_group_set_badness_(smartlist_t *group, int force)
   /* Pass 1: expire everything that's old, and see what the status of
    * everything else is. */
   SMARTLIST_FOREACH_BEGIN(group, or_connection_t *, or_conn) {
-    if (or_conn->base_.marked_for_close ||
-        connection_or_is_bad_for_new_circs(or_conn))
+    if (connection_or_single_set_badness_(now, or_conn, force))
       continue;
-    if (force ||
-        or_conn->base_.timestamp_created + TIME_BEFORE_OR_CONN_IS_TOO_OLD
-          < now) {
-      log_info(LD_OR,
-               "Marking OR conn to %s:%d as too old for new circuits "
-               "(fd "TOR_SOCKET_T_FORMAT", %d secs old).",
-               or_conn->base_.address, or_conn->base_.port, or_conn->base_.s,
-               (int)(now - or_conn->base_.timestamp_created));
-      connection_or_mark_bad_for_new_circs(or_conn);
-    }
 
     if (connection_or_is_bad_for_new_circs(or_conn)) {
       ++n_old;
@@ -1247,7 +1268,7 @@ connection_or_connect, (const tor_addr_t *_addr, uint16_t port,
                fmt_addrport(&TO_CONN(conn)->addr, TO_CONN(conn)->port));
     }
 
-    connection_free(TO_CONN(conn));
+    connection_free_(TO_CONN(conn));
     return NULL;
   }
 
@@ -1260,7 +1281,7 @@ connection_or_connect, (const tor_addr_t *_addr, uint16_t port,
       connection_or_connect_failed(conn,
                                    errno_to_orconn_end_reason(socket_error),
                                    tor_socket_strerror(socket_error));
-      connection_free(TO_CONN(conn));
+      connection_free_(TO_CONN(conn));
       return NULL;
     case 0:
       connection_watch_events(TO_CONN(conn), READ_EVENT | WRITE_EVENT);
@@ -1854,7 +1875,7 @@ connection_init_or_handshake_state(or_connection_t *conn, int started_here)
 
 /** Free all storage held by <b>state</b>. */
 void
-or_handshake_state_free(or_handshake_state_t *state)
+or_handshake_state_free_(or_handshake_state_t *state)
 {
   if (!state)
     return;
@@ -1953,6 +1974,12 @@ connection_or_set_state_open(or_connection_t *conn)
 {
   connection_or_change_state(conn, OR_CONN_STATE_OPEN);
   control_event_or_conn_status(conn, OR_CONN_EVENT_CONNECTED, 0);
+
+  /* Link protocol 3 appeared in Tor 0.2.3.6-alpha, so any connection
+   * that uses an earlier link protocol should not be treated as a relay. */
+  if (conn->link_proto < 3) {
+    channel_mark_client(TLS_CHAN_TO_BASE(conn->chan));
+  }
 
   or_handshake_state_free(conn->handshake_state);
   conn->handshake_state = NULL;

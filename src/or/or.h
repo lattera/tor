@@ -506,6 +506,7 @@ typedef enum {
  */
 /** Client-side circuit purpose: Normal circuit, with cpath. */
 #define CIRCUIT_PURPOSE_C_GENERAL 5
+#define CIRCUIT_PURPOSE_C_HS_MIN_ 6
 /** Client-side circuit purpose: at the client, connecting to intro point. */
 #define CIRCUIT_PURPOSE_C_INTRODUCING 6
 /** Client-side circuit purpose: at the client, sent INTRODUCE1 to intro point,
@@ -523,28 +524,46 @@ typedef enum {
 #define CIRCUIT_PURPOSE_C_REND_READY_INTRO_ACKED 11
 /** Client-side circuit purpose: at the client, rendezvous established. */
 #define CIRCUIT_PURPOSE_C_REND_JOINED 12
+/** This circuit is used for getting hsdirs */
+#define CIRCUIT_PURPOSE_C_HSDIR_GET 13
+#define CIRCUIT_PURPOSE_C_HS_MAX_ 13
 /** This circuit is used for build time measurement only */
-#define CIRCUIT_PURPOSE_C_MEASURE_TIMEOUT 13
-#define CIRCUIT_PURPOSE_C_MAX_ 13
+#define CIRCUIT_PURPOSE_C_MEASURE_TIMEOUT 14
+#define CIRCUIT_PURPOSE_C_MAX_ 14
+
+#define CIRCUIT_PURPOSE_S_HS_MIN_ 15
 /** Hidden-service-side circuit purpose: at the service, waiting for
  * introductions. */
-#define CIRCUIT_PURPOSE_S_ESTABLISH_INTRO 14
+#define CIRCUIT_PURPOSE_S_ESTABLISH_INTRO 15
 /** Hidden-service-side circuit purpose: at the service, successfully
  * established intro. */
-#define CIRCUIT_PURPOSE_S_INTRO 15
+#define CIRCUIT_PURPOSE_S_INTRO 16
 /** Hidden-service-side circuit purpose: at the service, connecting to rend
  * point. */
-#define CIRCUIT_PURPOSE_S_CONNECT_REND 16
+#define CIRCUIT_PURPOSE_S_CONNECT_REND 17
 /** Hidden-service-side circuit purpose: at the service, rendezvous
  * established. */
-#define CIRCUIT_PURPOSE_S_REND_JOINED 17
+#define CIRCUIT_PURPOSE_S_REND_JOINED 18
+/** This circuit is used for uploading hsdirs */
+#define CIRCUIT_PURPOSE_S_HSDIR_POST 19
+#define CIRCUIT_PURPOSE_S_HS_MAX_ 19
+
 /** A testing circuit; not meant to be used for actual traffic. */
-#define CIRCUIT_PURPOSE_TESTING 18
+#define CIRCUIT_PURPOSE_TESTING 20
 /** A controller made this circuit and Tor should not use it. */
-#define CIRCUIT_PURPOSE_CONTROLLER 19
+#define CIRCUIT_PURPOSE_CONTROLLER 21
 /** This circuit is used for path bias probing only */
-#define CIRCUIT_PURPOSE_PATH_BIAS_TESTING 20
-#define CIRCUIT_PURPOSE_MAX_ 20
+#define CIRCUIT_PURPOSE_PATH_BIAS_TESTING 22
+
+/** This circuit is used for vanguards/restricted paths.
+ *
+ *  This type of circuit is *only* created preemptively and never
+ *  on-demand. When an HS operation needs to take place (e.g. connect to an
+ *  intro point), these circuits are then cannibalized and repurposed to the
+ *  actual needed HS purpose. */
+#define CIRCUIT_PURPOSE_HS_VANGUARDS 23
+
+#define CIRCUIT_PURPOSE_MAX_ 23
 /** A catch-all for unrecognized purposes. Currently we don't expect
  * to make or see any circuits with this purpose. */
 #define CIRCUIT_PURPOSE_UNKNOWN 255
@@ -1166,8 +1185,8 @@ typedef struct packed_cell_t {
   /** Next cell queued on this circuit. */
   TOR_SIMPLEQ_ENTRY(packed_cell_t) next;
   char body[CELL_MAX_NETWORK_SIZE]; /**< Cell as packed for network. */
-  uint32_t inserted_time; /**< Time (in milliseconds since epoch, with high
-                           * bits truncated) when this cell was inserted. */
+  uint32_t inserted_timestamp; /**< Time (in timestamp units) when this cell
+                                * was inserted */
 } packed_cell_t;
 
 /** A queue of cells on a circuit, waiting to be added to the
@@ -1177,6 +1196,22 @@ typedef struct cell_queue_t {
   TOR_SIMPLEQ_HEAD(cell_simpleq, packed_cell_t) head;
   int n; /**< The number of cells in the queue. */
 } cell_queue_t;
+
+/** A single queued destroy cell. */
+typedef struct destroy_cell_t {
+  TOR_SIMPLEQ_ENTRY(destroy_cell_t) next;
+  circid_t circid;
+  uint32_t inserted_timestamp; /**< Time (in timestamp units) when this cell
+                                * was inserted */
+  uint8_t reason;
+} destroy_cell_t;
+
+/** A queue of destroy cells on a channel. */
+typedef struct destroy_cell_queue_t {
+  /** Linked list of packed_cell_t */
+  TOR_SIMPLEQ_HEAD(dcell_simpleq, destroy_cell_t) head;
+  int n; /**< The number of cells in the queue. */
+} destroy_cell_queue_t;
 
 /** Beginning of a RELAY cell payload. */
 typedef struct {
@@ -1326,10 +1361,10 @@ typedef struct connection_t {
                          * connection. */
   size_t outbuf_flushlen; /**< How much data should we try to flush from the
                            * outbuf? */
-  time_t timestamp_lastread; /**< When was the last time libevent said we could
-                              * read? */
-  time_t timestamp_lastwritten; /**< When was the last time libevent said we
-                                 * could write? */
+  time_t timestamp_last_read_allowed; /**< When was the last time libevent said
+                                       * we could read? */
+  time_t timestamp_last_write_allowed; /**< When was the last time libevent
+                                        * said we could write? */
 
   time_t timestamp_created; /**< When was this connection_t created? */
 
@@ -1601,6 +1636,10 @@ typedef struct or_connection_t {
   /** True iff this connection has had its bootstrap failure logged with
    * control_event_bootstrap_problem. */
   unsigned int have_noted_bootstrap_problem:1;
+  /** True iff this is a client connection and its address has been put in the
+   * geoip cache and handled by the DoS mitigation subsystem. We use this to
+   * insure we have a coherent count of concurrent connection. */
+  unsigned int tracked_for_dos_mitigation : 1;
 
   uint16_t link_proto; /**< What protocol version are we using? 0 for
                         * "none negotiated yet." */
@@ -1779,9 +1818,6 @@ typedef struct entry_connection_t {
    * the exit has sent a CONNECTED cell) and we have chosen to use it.
    */
   unsigned int may_use_optimistic_data : 1;
-
-  /** Are we a socks SocksSocket listener? */
-  unsigned int is_socks_socket:1;
 } entry_connection_t;
 
 /** Subtype of connection_t for an "directory connection" -- that is, an HTTP
@@ -2161,6 +2197,43 @@ typedef struct signed_descriptor_t {
 /** A signed integer representing a country code. */
 typedef int16_t country_t;
 
+/** Flags used to summarize the declared protocol versions of a relay,
+ * so we don't need to parse them again and again. */
+typedef struct protover_summary_flags_t {
+  /** True iff we have a proto line for this router, or a versions line
+   * from which we could infer the protocols. */
+  unsigned int protocols_known:1;
+
+  /** True iff this router has a version or protocol list that allows it to
+   * accept EXTEND2 cells. This requires Relay=2. */
+  unsigned int supports_extend2_cells:1;
+
+  /** True iff this router has a protocol list that allows it to negotiate
+   * ed25519 identity keys on a link handshake with us. This
+   * requires LinkAuth=3. */
+  unsigned int supports_ed25519_link_handshake_compat:1;
+
+  /** True iff this router has a protocol list that allows it to negotiate
+   * ed25519 identity keys on a link handshake, at all. This requires some
+   * LinkAuth=X for X >= 3. */
+  unsigned int supports_ed25519_link_handshake_any:1;
+
+  /** True iff this router has a protocol list that allows it to be an
+   * introduction point supporting ed25519 authentication key which is part of
+   * the v3 protocol detailed in proposal 224. This requires HSIntro=4. */
+  unsigned int supports_ed25519_hs_intro : 1;
+
+  /** True iff this router has a protocol list that allows it to be an hidden
+   * service directory supporting version 3 as seen in proposal 224. This
+   * requires HSDir=2. */
+  unsigned int supports_v3_hsdir : 1;
+
+  /** True iff this router has a protocol list that allows it to be an hidden
+   * service rendezvous point supporting version 3 as seen in proposal 224.
+   * This requires HSRend=2. */
+  unsigned int supports_v3_rendezvous_point: 1;
+} protover_summary_flags_t;
+
 /** Information about another onion router in the network. */
 typedef struct {
   signed_descriptor_t cache_info;
@@ -2229,23 +2302,26 @@ typedef struct {
    * this routerinfo. Used only during voting. */
   unsigned int omit_from_vote:1;
 
+  /** Flags to summarize the protocol versions for this routerinfo_t. */
+  protover_summary_flags_t pv;
+
 /** Tor can use this router for general positions in circuits; we got it
  * from a directory server as usual, or we're an authority and a server
  * uploaded it. */
 #define ROUTER_PURPOSE_GENERAL 0
 /** Tor should avoid using this router for circuit-building: we got it
- * from a crontroller.  If the controller wants to use it, it'll have to
+ * from a controller.  If the controller wants to use it, it'll have to
  * ask for it by identity. */
 #define ROUTER_PURPOSE_CONTROLLER 1
 /** Tor should use this router only for bridge positions in circuits: we got
  * it via a directory request from the bridge itself, or a bridge
- * authority. x*/
+ * authority. */
 #define ROUTER_PURPOSE_BRIDGE 2
 /** Tor should not use this router; it was marked in cached-descriptors with
  * a purpose we didn't recognize. */
 #define ROUTER_PURPOSE_UNKNOWN 255
 
-  /* In what way did we find out about this router?  One of ROUTER_PURPOSE_*.
+  /** In what way did we find out about this router?  One of ROUTER_PURPOSE_*.
    * Routers of different purposes are kept segregated and used for different
    * things; see notes on ROUTER_PURPOSE_* macros above.
    */
@@ -2307,37 +2383,14 @@ typedef struct routerstatus_t {
   unsigned int is_v2_dir:1; /** True iff this router publishes an open DirPort
                              * or it claims to accept tunnelled dir requests.
                              */
-  /** True iff we have a proto line for this router, or a versions line
-   * from which we could infer the protocols. */
-  unsigned int protocols_known:1;
-
-  /** True iff this router has a version or protocol list that allows it to
-   * accept EXTEND2 cells */
-  unsigned int supports_extend2_cells:1;
-
-  /** True iff this router has a protocol list that allows it to negotiate
-   * ed25519 identity keys on a link handshake. */
-  unsigned int supports_ed25519_link_handshake:1;
-
-  /** True iff this router has a protocol list that allows it to be an
-   * introduction point supporting ed25519 authentication key which is part of
-   * the v3 protocol detailed in proposal 224. This requires HSIntro=4. */
-  unsigned int supports_ed25519_hs_intro : 1;
-
-  /** True iff this router has a protocol list that allows it to be an hidden
-   * service directory supporting version 3 as seen in proposal 224. This
-   * requires HSDir=2. */
-  unsigned int supports_v3_hsdir : 1;
-
-  /** True iff this router has a protocol list that allows it to be an hidden
-   * service rendezvous point supporting version 3 as seen in proposal 224.
-   * This requires HSRend=2. */
-  unsigned int supports_v3_rendezvous_point: 1;
 
   unsigned int has_bandwidth:1; /**< The vote/consensus had bw info */
   unsigned int has_exitsummary:1; /**< The vote/consensus had exit summaries */
   unsigned int bw_is_unmeasured:1; /**< This is a consensus entry, with
                                     * the Unmeasured flag set. */
+
+  /** Flags to summarize the protocol versions for this routerstatus_t. */
+  protover_summary_flags_t pv;
 
   uint32_t bandwidth_kb; /**< Bandwidth (capacity) of the router as reported in
                        * the vote/consensus, in kilobytes/sec. */
@@ -3086,7 +3139,7 @@ typedef struct circuit_t {
 
   /** When the circuit was first used, or 0 if the circuit is clean.
    *
-   * XXXX Note that some code will artifically adjust this value backward
+   * XXXX Note that some code will artificially adjust this value backward
    * in time in order to indicate that a circuit shouldn't be used for new
    * streams, but that it can stay alive as long as it has streams on it.
    * That's a kludge we should fix.
@@ -3344,7 +3397,7 @@ typedef struct origin_circuit_t {
   uint32_t global_identifier;
 
   /** True if we have associated one stream to this circuit, thereby setting
-   * the isolation paramaters for this circuit.  Note that this doesn't
+   * the isolation parameters for this circuit.  Note that this doesn't
    * necessarily mean that we've <em>attached</em> any streams to the circuit:
    * we may only have marked up this circuit during the launch process.
    */
@@ -3635,10 +3688,24 @@ typedef struct {
   int TruncateLogFile; /**< Boolean: Should we truncate the log file
                             before we start writing? */
   char *SyslogIdentityTag; /**< Identity tag to add for syslog logging. */
+  char *AndroidIdentityTag; /**< Identity tag to add for Android logging. */
 
   char *DebugLogFile; /**< Where to send verbose log messages. */
-  char *DataDirectory; /**< OR only: where to store long-term data. */
+  char *DataDirectory_option; /**< Where to store long-term data, as
+                               * configured by the user. */
+  char *DataDirectory; /**< Where to store long-term data, as modified. */
   int DataDirectoryGroupReadable; /**< Boolean: Is the DataDirectory g+r? */
+
+  char *KeyDirectory_option; /**< Where to store keys, as
+                               * configured by the user. */
+  char *KeyDirectory; /**< Where to store keys data, as modified. */
+  int KeyDirectoryGroupReadable; /**< Boolean: Is the KeyDirectory g+r? */
+
+  char *CacheDirectory_option; /**< Where to store cached data, as
+                               * configured by the user. */
+  char *CacheDirectory; /**< Where to store cached data, as modified. */
+  int CacheDirectoryGroupReadable; /**< Boolean: Is the CacheDirectory g+r? */
+
   char *Nickname; /**< OR only: nickname of this onion router. */
   char *Address; /**< OR only: configured address for this onion router. */
   char *PidFile; /**< Where to store PID of Tor process. */
@@ -3674,6 +3741,7 @@ typedef struct {
                                         * interface addresses?
                                         * Includes OutboundBindAddresses and
                                         * configured ports. */
+  int ReducedExitPolicy; /**<Should we use the Reduced Exit Policy? */
   config_line_t *SocksPolicy; /**< Lists of socks policy components */
   config_line_t *DirPolicy; /**< Lists of dir policy components */
   /** Local address to bind outbound sockets */
@@ -3723,7 +3791,7 @@ typedef struct {
                                  * for control connections. */
 
   int ControlSocketsGroupWritable; /**< Boolean: Are control sockets g+rw? */
-  int SocksSocketsGroupWritable; /**< Boolean: Are SOCKS sockets g+rw? */
+  int UnixSocksGroupWritable; /**< Boolean: Are SOCKS Unix sockets g+rw? */
   /** Ports to listen on for directory connections. */
   config_line_t *DirPort_lines;
   config_line_t *DNSPort_lines; /**< Ports to listen on for DNS requests. */
@@ -3769,6 +3837,10 @@ typedef struct {
                                    * versions? */
   int BridgeAuthoritativeDir; /**< Boolean: is this an authoritative directory
                                * that aggregates bridge descriptors? */
+
+  /** If set on a bridge relay, it will include this value on a new
+   * "bridge-distribution-request" line in its bridge descriptor. */
+  char *BridgeDistribution;
 
   /** If set on a bridge authority, it will answer requests on its dirport
    * for bridge statuses -- but only if the requests use this password. */
@@ -3836,6 +3908,14 @@ typedef struct {
 
   /** A routerset that should be used when picking RPs for HS circuits. */
   routerset_t *Tor2webRendezvousPoints;
+
+  /** A routerset that should be used when picking middle nodes for HS
+   *  circuits. */
+  routerset_t *HSLayer2Nodes;
+
+  /** A routerset that should be used when picking third-hop nodes for HS
+   *  circuits. */
+  routerset_t *HSLayer3Nodes;
 
   /** Onion Services in HiddenServiceSingleHopMode make one-hop (direct)
    * circuits between the onion service server, and the introduction and
@@ -3949,6 +4029,8 @@ typedef struct {
 
   int HeartbeatPeriod; /**< Log heartbeat messages after this many seconds
                         * have passed. */
+  int MainloopStats; /**< Log main loop statistics as part of the
+                      * heartbeat messages. */
 
   char *HTTPProxy; /**< hostname[:port] to use as http proxy, if any. */
   tor_addr_t HTTPProxyAddr; /**< Parsed IPv4 addr for http proxy, if any. */
@@ -4066,6 +4148,8 @@ typedef struct {
   /** Process specifier for a controller that ‘owns’ this Tor
    * instance.  Tor will terminate if its owning controller does. */
   char *OwningControllerProcess;
+  /** FD specifier for a controller that owns this Tor instance. */
+  int OwningControllerFD;
 
   int ShutdownWaitLength; /**< When we get a SIGINT and we're a server, how
                            * long do we wait before exiting? */
@@ -4079,8 +4163,6 @@ typedef struct {
   int Sandbox; /**< Boolean: should sandboxing be enabled? */
   int SafeSocks; /**< Boolean: should we outright refuse application
                   * connections that use socks4 or socks5-with-local-dns? */
-#define LOG_PROTOCOL_WARN (get_options()->ProtocolWarnings ? \
-                           LOG_WARN : LOG_INFO)
   int ProtocolWarnings; /**< Boolean: when other parties screw up the Tor
                          * protocol, is it a warn or an info in our logs? */
   int TestSocks; /**< Boolean: when we get a socks connection, do we loudly
@@ -4097,7 +4179,7 @@ typedef struct {
   int UseEntryGuards_option;
   /** Internal variable to remember whether we're actually acting on
    * UseEntryGuards_option -- when we're a non-anonymous Tor2web client or
-   * Single Onion Service, it is alwasy false, otherwise we use the value of
+   * Single Onion Service, it is always false, otherwise we use the value of
    * UseEntryGuards_option. */
   int UseEntryGuards;
 
@@ -4202,7 +4284,7 @@ typedef struct {
   /** If true, do not believe anybody who tells us that a domain resolves
    * to an internal address, or that an internal address has a PTR mapping.
    * Helps avoid some cross-site attacks. */
-  int TestingClientDNSRejectInternalAddresses;
+  int ClientDNSRejectInternalAddresses;
 
   /** If true, do not accept any requests to connect to internal addresses
    * over randomly chosen exits. */
@@ -4625,7 +4707,46 @@ typedef struct {
   smartlist_t *Schedulers;
   /* An ordered list of scheduler_types mapped from Schedulers. */
   smartlist_t *SchedulerTypes_;
+
+  /** List of files that were opened by %include in torrc and torrc-defaults */
+  smartlist_t *FilesOpenedByIncludes;
+
+  /** If true, Tor shouldn't install any posix signal handlers, since it is
+   * running embedded inside another process.
+   */
+  int DisableSignalHandlers;
+
+  /** Autobool: Is the circuit creation DoS mitigation subsystem enabled? */
+  int DoSCircuitCreationEnabled;
+  /** Minimum concurrent connection needed from one single address before any
+   * defense is used. */
+  int DoSCircuitCreationMinConnections;
+  /** Circuit rate used to refill the token bucket. */
+  int DoSCircuitCreationRate;
+  /** Maximum allowed burst of circuits. Reaching that value, the address is
+   * detected as malicious and a defense might be used. */
+  int DoSCircuitCreationBurst;
+  /** When an address is marked as malicous, what defense should be used
+   * against it. See the dos_cc_defense_type_t enum. */
+  int DoSCircuitCreationDefenseType;
+  /** For how much time (in seconds) the defense is applicable for a malicious
+   * address. A random time delta is added to the defense time of an address
+   * which will be between 1 second and half of this value. */
+  int DoSCircuitCreationDefenseTimePeriod;
+
+  /** Autobool: Is the DoS connection mitigation subsystem enabled? */
+  int DoSConnectionEnabled;
+  /** Maximum concurrent connection allowed per address. */
+  int DoSConnectionMaxConcurrentCount;
+  /** When an address is reaches the maximum count, what defense should be
+   * used against it. See the dos_conn_defense_type_t enum. */
+  int DoSConnectionDefenseType;
+
+  /** Autobool: Do we refuse single hop client rendezvous? */
+  int DoSRefuseSingleHopClientRendezvous;
 } or_options_t;
+
+#define LOG_PROTOCOL_WARN (get_protocol_warning_severity_level())
 
 /** Persistent state for an onion router, as saved to disk. */
 typedef struct {
@@ -5256,7 +5377,7 @@ typedef struct rend_intro_point_t {
    */
   int accepted_introduce2_count;
 
-  /** (Service side only) Number of maximum INTRODUCE2 cells that this IP
+  /** (Service side only) Maximum number of INTRODUCE2 cells that this IP
    * will accept. This is a random value between
    * INTRO_POINT_MIN_LIFETIME_INTRODUCTIONS and
    * INTRO_POINT_MAX_LIFETIME_INTRODUCTIONS. */

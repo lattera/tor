@@ -9,9 +9,6 @@
 #include "crypto.h"
 #include "crypto_ed25519.h"
 
-extern const char tor_git_revision[];
-const char tor_git_revision[] = "";
-
 static or_options_t *mock_options = NULL;
 static const or_options_t *
 mock_get_options(void)
@@ -28,8 +25,9 @@ mock_crypto_pk_public_checksig__nocheck(const crypto_pk_t *env, char *to,
   (void)fromlen;
   /* We could look at from[0..fromlen-1] ... */
   tor_assert(tolen >= crypto_pk_keysize(env));
-  memset(to, 0x01, 20);
-  return 20;
+  size_t siglen = MIN(20, crypto_pk_keysize(env));
+  memset(to, 0x01, siglen);
+  return (int)siglen;
 }
 
 static int
@@ -107,11 +105,14 @@ global_init(void)
   configure_backtrace_handler(get_version());
 
   /* set up the options. */
-  mock_options = tor_malloc(sizeof(or_options_t));
+  mock_options = tor_malloc_zero(sizeof(or_options_t));
   MOCK(get_options, mock_get_options);
 
   /* Make BUG() and nonfatal asserts crash */
   tor_set_failed_assertion_callback(abort);
+
+  /* Make protocol warnings handled correctly. */
+  init_protocol_warning_severity_level();
 }
 
 #ifdef LLVM_FUZZ

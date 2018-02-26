@@ -43,7 +43,7 @@
  * the directory authority functionality.  The directory.c module delegates
  * here in order to handle incoming requests from clients, via
  * connection_dirserv_flushed_some() and its kin.  In order to save RAM, this
- * module is reponsible for spooling directory objects (in whole or in part)
+ * module is responsible for spooling directory objects (in whole or in part)
  * onto buf_t instances, and then closing the dir_connection_t once the
  * objects are totally flushed.
  *
@@ -417,7 +417,10 @@ dirserv_get_status_impl(const char *id_digest, const char *nickname,
 
   if (result & FP_REJECT) {
     if (msg)
-      *msg = "Fingerprint is marked rejected -- please contact us?";
+      *msg = "Fingerprint is marked rejected -- if you think this is a "
+             "mistake please set a valid email address in ContactInfo and "
+             "send an email to bad-relays@lists.torproject.org mentioning "
+             "your fingerprint(s)?";
     return FP_REJECT;
   } else if (result & FP_INVALID) {
     if (msg)
@@ -435,7 +438,10 @@ dirserv_get_status_impl(const char *id_digest, const char *nickname,
     log_fn(severity, LD_DIRSERV, "Rejecting '%s' because of address '%s'",
                nickname, fmt_addr32(addr));
     if (msg)
-      *msg = "Suspicious relay address range -- please contact us?";
+      *msg = "Suspicious relay address range -- if you think this is a "
+             "mistake please set a valid email address in ContactInfo and "
+             "send an email to bad-relays@lists.torproject.org mentioning "
+             "your address(es) and fingerprint(s)?";
     return FP_REJECT;
   }
   if (!authdir_policy_valid_address(addr, or_port)) {
@@ -1086,7 +1092,7 @@ router_is_active(const routerinfo_t *ri, const node_t *node, time_t now)
   if (!node->is_running || !node->is_valid || ri->is_hibernating) {
     return 0;
   }
-  /* Only require bandwith capacity in non-test networks, or
+  /* Only require bandwidth capacity in non-test networks, or
    * if TestingTorNetwork, and TestingMinExitFlagThreshold is non-zero */
   if (!ri->bandwidthcapacity) {
     if (get_options()->TestingTorNetwork) {
@@ -1417,7 +1423,7 @@ dirserv_thinks_router_is_hs_dir(const routerinfo_t *router,
    * tests aren't instant. If we haven't been running long enough,
    * trust the relay. */
 
-  if (stats_n_seconds_working >
+  if (get_uptime() >
       get_options()->MinUptimeHidServDirectoryV2 * 1.1)
     uptime = MIN(rep_hist_get_uptime(router->cache_info.identity_digest, now),
                  real_uptime(router, now));
@@ -1519,15 +1525,21 @@ dirserv_compute_performance_thresholds(digestmap_t *omit_as_sybil)
         node->ri &&
         node->ri->purpose != ROUTER_PURPOSE_BRIDGE)
       continue;
-    if (router_counts_toward_thresholds(node, now, omit_as_sybil,
-                                        require_mbw)) {
-      routerinfo_t *ri = node->ri;
-      const char *id = node->identity;
-      uint32_t bw_kb;
-      /* resolve spurious clang shallow analysis null pointer errors */
-      tor_assert(ri);
+
+    routerinfo_t *ri = node->ri;
+    if (ri) {
       node->is_exit = (!router_exit_policy_rejects_all(ri) &&
                        exit_policy_is_general_exit(ri->exit_policy));
+    }
+
+    if (router_counts_toward_thresholds(node, now, omit_as_sybil,
+                                        require_mbw)) {
+      const char *id = node->identity;
+      uint32_t bw_kb;
+
+      /* resolve spurious clang shallow analysis null pointer errors */
+      tor_assert(ri);
+
       uptimes[n_active] = (uint32_t)real_uptime(ri, now);
       mtbfs[n_active] = rep_hist_get_stability(id, now);
       tks  [n_active] = rep_hist_get_weighted_time_known(id, now);
@@ -1897,21 +1909,28 @@ version_from_platform(const char *platform)
 /** Helper: write the router-status information in <b>rs</b> into a newly
  * allocated character buffer.  Use the same format as in network-status
  * documents.  If <b>version</b> is non-NULL, add a "v" line for the platform.
+ *
+ * consensus_method is the current consensus method when format is
+ * NS_V3_CONSENSUS or NS_V3_CONSENSUS_MICRODESC. It is ignored for other
+ * formats: pass ROUTERSTATUS_FORMAT_NO_CONSENSUS_METHOD.
+ *
  * Return 0 on success, -1 on failure.
  *
  * The format argument has one of the following values:
  *   NS_V2 - Output an entry suitable for a V2 NS opinion document
  *   NS_V3_CONSENSUS - Output the first portion of a V3 NS consensus entry
+ *        for consensus_method.
  *   NS_V3_CONSENSUS_MICRODESC - Output the first portion of a V3 microdesc
- *        consensus entry.
+ *        consensus entry for consensus_method.
  *   NS_V3_VOTE - Output a complete V3 NS vote. If <b>vrs</b> is present,
  *        it contains additional information for the vote.
- *   NS_CONTROL_PORT - Output a NS document for the control port
+ *   NS_CONTROL_PORT - Output a NS document for the control port.
  */
 char *
 routerstatus_format_entry(const routerstatus_t *rs, const char *version,
                           const char *protocols,
                           routerstatus_format_type_t format,
+                          int consensus_method,
                           const vote_routerstatus_t *vrs)
 {
   char *summary;
@@ -1942,8 +1961,10 @@ routerstatus_format_entry(const routerstatus_t *rs, const char *version,
    * networkstatus_type_t values, with an additional control port value
    * added -MP */
 
-  /* V3 microdesc consensuses don't have "a" lines. */
-  if (format == NS_V3_CONSENSUS_MICRODESC)
+  /* V3 microdesc consensuses only have "a" lines in later consensus methods
+   */
+  if (format == NS_V3_CONSENSUS_MICRODESC &&
+      consensus_method < MIN_METHOD_FOR_A_LINES_IN_MICRODESC_CONSENSUS)
     goto done;
 
   /* Possible "a" line. At most one for now. */
@@ -1952,7 +1973,7 @@ routerstatus_format_entry(const routerstatus_t *rs, const char *version,
                            fmt_addrport(&rs->ipv6_addr, rs->ipv6_orport));
   }
 
-  if (format == NS_V3_CONSENSUS)
+  if (format == NS_V3_CONSENSUS || format == NS_V3_CONSENSUS_MICRODESC)
     goto done;
 
   smartlist_add_asprintf(chunks,
@@ -2213,7 +2234,8 @@ routers_make_ed_keys_unique(smartlist_t *routers)
 }
 
 /** Extract status information from <b>ri</b> and from other authority
- * functions and store it in <b>rs</b>>.
+ * functions and store it in <b>rs</b>. <b>rs</b> is zeroed out before it is
+ * set.
  *
  * We assume that ri-\>is_running has already been set, e.g. by
  *   dirserv_set_router_is_running(ri, now);
@@ -2279,6 +2301,9 @@ set_routerstatus_from_routerinfo(routerstatus_t *rs,
        OR port and it's reachable so copy it to the routerstatus.  */
     tor_addr_copy(&rs->ipv6_addr, &ri->ipv6_addr);
     rs->ipv6_orport = ri->ipv6_orport;
+  } else {
+    tor_addr_make_null(&rs->ipv6_addr, AF_INET6);
+    rs->ipv6_orport = 0;
   }
 
   if (options->TestingTorNetwork) {
@@ -3284,7 +3309,7 @@ dirserv_orconn_tls_done(const tor_addr_t *addr,
   ri = node->ri;
 
   if (get_options()->AuthDirTestEd25519LinkKeys &&
-      node_supports_ed25519_link_authentication(node) &&
+      node_supports_ed25519_link_authentication(node, 1) &&
       ri->cache_info.signing_key_cert) {
     /* We allow the node to have an ed25519 key if we haven't been told one in
      * the routerinfo, but if we *HAVE* been told one in the routerinfo, it
@@ -3367,7 +3392,7 @@ dirserv_single_reachability_test(time_t now, routerinfo_t *router)
   tor_assert(node);
 
   if (options->AuthDirTestEd25519LinkKeys &&
-      node_supports_ed25519_link_authentication(node)) {
+      node_supports_ed25519_link_authentication(node, 1)) {
     ed_id_key = &router->cache_info.signing_key_cert->signing_key;
   } else {
     ed_id_key = NULL;
@@ -3496,7 +3521,7 @@ spooled_resource_new_from_cache_entry(consensus_cache_entry_t *entry)
 
 /** Release all storage held by <b>spooled</b>. */
 void
-spooled_resource_free(spooled_resource_t *spooled)
+spooled_resource_free_(spooled_resource_t *spooled)
 {
   if (spooled == NULL)
     return;

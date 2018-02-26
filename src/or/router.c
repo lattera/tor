@@ -174,7 +174,7 @@ expire_old_onion_keys(void)
 
   tor_mutex_release(key_lock);
 
-  fname = get_datadir_fname2("keys", "secret_onion_key.old");
+  fname = get_keydir_fname("secret_onion_key.old");
   if (file_status(fname) == FN_FILE) {
     if (tor_unlink(fname) != 0) {
       log_warn(LD_FS, "Couldn't unlink old onion key file %s: %s",
@@ -183,7 +183,7 @@ expire_old_onion_keys(void)
   }
   tor_free(fname);
 
-  fname = get_datadir_fname2("keys", "secret_onion_key_ntor.old");
+  fname = get_keydir_fname("secret_onion_key_ntor.old");
   if (file_status(fname) == FN_FILE) {
     if (tor_unlink(fname) != 0) {
       log_warn(LD_FS, "Couldn't unlink old ntor onion key file %s: %s",
@@ -233,7 +233,7 @@ ntor_key_map_free_helper(void *arg)
 }
 /** Release all storage from a keymap returned by construct_ntor_key_map. */
 void
-ntor_key_map_free(di_digest256_map_t *map)
+ntor_key_map_free_(di_digest256_map_t *map)
 {
   if (!map)
     return;
@@ -378,8 +378,8 @@ rotate_onion_key(void)
   or_state_t *state = get_or_state();
   curve25519_keypair_t new_curve25519_keypair;
   time_t now;
-  fname = get_datadir_fname2("keys", "secret_onion_key");
-  fname_prev = get_datadir_fname2("keys", "secret_onion_key.old");
+  fname = get_keydir_fname("secret_onion_key");
+  fname_prev = get_keydir_fname("secret_onion_key.old");
   /* There isn't much point replacing an old key with an empty file */
   if (file_status(fname) == FN_FILE) {
     if (replace_file(fname, fname_prev))
@@ -399,8 +399,8 @@ rotate_onion_key(void)
   }
   tor_free(fname);
   tor_free(fname_prev);
-  fname = get_datadir_fname2("keys", "secret_onion_key_ntor");
-  fname_prev = get_datadir_fname2("keys", "secret_onion_key_ntor.old");
+  fname = get_keydir_fname("secret_onion_key_ntor");
+  fname_prev = get_keydir_fname("secret_onion_key_ntor.old");
   if (curve25519_keypair_generate(&new_curve25519_keypair, 1) < 0)
     goto error;
   /* There isn't much point replacing an old key with an empty file */
@@ -624,7 +624,7 @@ load_authority_keyset(int legacy, crypto_pk_t **key_out,
   crypto_pk_t *signing_key = NULL;
   authority_cert_t *parsed = NULL;
 
-  fname = get_datadir_fname2("keys",
+  fname = get_keydir_fname(
                  legacy ? "legacy_signing_key" : "authority_signing_key");
   signing_key = init_key_from_file(fname, 0, LOG_ERR, 0);
   if (!signing_key) {
@@ -632,7 +632,7 @@ load_authority_keyset(int legacy, crypto_pk_t **key_out,
     goto done;
   }
   tor_free(fname);
-  fname = get_datadir_fname2("keys",
+  fname = get_keydir_fname(
                legacy ? "legacy_certificate" : "authority_certificate");
   cert = read_file_to_str(fname, 0, NULL);
   if (!cert) {
@@ -932,22 +932,9 @@ init_keys(void)
   }
   if (init_keys_common() < 0)
     return -1;
-  /* Make sure DataDirectory exists, and is private. */
-  cpd_check_t cpd_opts = CPD_CREATE;
-  if (options->DataDirectoryGroupReadable)
-    cpd_opts |= CPD_GROUP_READ;
-  if (check_private_dir(options->DataDirectory, cpd_opts, options->User)) {
-    log_err(LD_OR, "Can't create/check datadirectory %s",
-            options->DataDirectory);
+
+  if (create_keys_directory(options) < 0)
     return -1;
-  }
-  /* Check the key directory. */
-  keydir = get_datadir_fname("keys");
-  if (check_private_dir(keydir, CPD_CREATE, options->User)) {
-    tor_free(keydir);
-    return -1;
-  }
-  tor_free(keydir);
 
   /* 1a. Read v3 directory authority key/cert information. */
   memset(v3_digest, 0, sizeof(v3_digest));
@@ -971,7 +958,7 @@ init_keys(void)
   }
 
   /* 1b. Read identity key. Make it if none is found. */
-  keydir = get_datadir_fname2("keys", "secret_id_key");
+  keydir = get_keydir_fname("secret_id_key");
   log_info(LD_GENERAL,"Reading/making identity key \"%s\"...",keydir);
   prkey = init_key_from_file(keydir, 1, LOG_ERR, 1);
   tor_free(keydir);
@@ -999,7 +986,7 @@ init_keys(void)
     return -1;
 
   /* 2. Read onion key.  Make it if none is found. */
-  keydir = get_datadir_fname2("keys", "secret_onion_key");
+  keydir = get_keydir_fname("secret_onion_key");
   log_info(LD_GENERAL,"Reading/making onion key \"%s\"...",keydir);
   prkey = init_key_from_file(keydir, 1, LOG_ERR, 1);
   tor_free(keydir);
@@ -1024,7 +1011,7 @@ init_keys(void)
     }
   }
 
-  keydir = get_datadir_fname2("keys", "secret_onion_key.old");
+  keydir = get_keydir_fname("secret_onion_key.old");
   if (!lastonionkey && file_status(keydir) == FN_FILE) {
     /* Load keys from non-empty files only.
      * Missing old keys won't be replaced with freshly generated keys. */
@@ -1037,14 +1024,14 @@ init_keys(void)
   {
     /* 2b. Load curve25519 onion keys. */
     int r;
-    keydir = get_datadir_fname2("keys", "secret_onion_key_ntor");
+    keydir = get_keydir_fname("secret_onion_key_ntor");
     r = init_curve25519_keypair_from_file(&curve25519_onion_key,
                                           keydir, 1, LOG_ERR, "onion");
     tor_free(keydir);
     if (r<0)
       return -1;
 
-    keydir = get_datadir_fname2("keys", "secret_onion_key_ntor.old");
+    keydir = get_keydir_fname("secret_onion_key_ntor.old");
     if (tor_mem_is_zero((const char *)
                            last_curve25519_onion_key.pubkey.public_key,
                         CURVE25519_PUBKEY_LEN) &&
@@ -1240,7 +1227,8 @@ check_whether_dirport_reachable(const or_options_t *options)
 /* XXX Should this be increased? */
 #define MIN_BW_TO_ADVERTISE_DIRSERVER 51200
 
-/** Return true iff we have enough configured bandwidth to cache directory
+/** Return true iff we have enough configured bandwidth to advertise or
+ * automatically provide directory services from cache directory
  * information. */
 static int
 router_has_bandwidth_to_be_dirserver(const or_options_t *options)
@@ -1263,7 +1251,7 @@ router_has_bandwidth_to_be_dirserver(const or_options_t *options)
  * MIN_BW_TO_ADVERTISE_DIRSERVER, don't bother trying to serve requests.
  */
 static int
-router_should_be_directory_server(const or_options_t *options, int dir_port)
+router_should_be_dirserver(const or_options_t *options, int dir_port)
 {
   static int advertising=1; /* start out assuming we will advertise */
   int new_choice=1;
@@ -1368,7 +1356,7 @@ decide_to_advertise_dir_impl(const or_options_t *options,
 
   /* Part two: consider config options that could make us choose to
    * publish or not publish that the user might find surprising. */
-  return router_should_be_directory_server(options, dir_port);
+  return router_should_be_dirserver(options, dir_port);
 }
 
 /** Front-end to decide_to_advertise_dir_impl(): return 0 if we don't want to
@@ -1376,7 +1364,7 @@ decide_to_advertise_dir_impl(const or_options_t *options,
  * DirPort we want to advertise.
  */
 static int
-decide_to_advertise_dirport(const or_options_t *options, uint16_t dir_port)
+router_should_advertise_dirport(const or_options_t *options, uint16_t dir_port)
 {
   /* supports_tunnelled_dir_requests is not relevant, pass 0 */
   return decide_to_advertise_dir_impl(options, dir_port, 0) ? dir_port : 0;
@@ -1386,7 +1374,7 @@ decide_to_advertise_dirport(const or_options_t *options, uint16_t dir_port)
  * advertise the fact that we support begindir requests, else return 1.
  */
 static int
-decide_to_advertise_begindir(const or_options_t *options,
+router_should_advertise_begindir(const or_options_t *options,
                              int supports_tunnelled_dir_requests)
 {
   /* dir_port is not relevant, pass 0 */
@@ -1419,26 +1407,17 @@ extend_info_from_router(const routerinfo_t *r)
                          &ap.addr, ap.port);
 }
 
-/** Some time has passed, or we just got new directory information.
- * See if we currently believe our ORPort or DirPort to be
- * unreachable. If so, launch a new test for it.
- *
- * For ORPort, we simply try making a circuit that ends at ourselves.
- * Success is noticed in onionskin_answer().
- *
- * For DirPort, we make a connection via Tor to our DirPort and ask
- * for our own server descriptor.
- * Success is noticed in connection_dir_client_reached_eof().
+/**See if we currently believe our ORPort or DirPort to be
+ * unreachable. If so, return 1 else return 0.
  */
-void
-consider_testing_reachability(int test_or, int test_dir)
+static int
+router_should_check_reachability(int test_or, int test_dir)
 {
   const routerinfo_t *me = router_get_my_routerinfo();
   const or_options_t *options = get_options();
-  int orport_reachable = check_whether_orport_reachable(options);
-  tor_addr_t addr;
+
   if (!me)
-    return;
+    return 0;
 
   if (routerset_contains_router(options->ExcludeNodes, me, -1) &&
       options->StrictNodes) {
@@ -1453,43 +1432,66 @@ consider_testing_reachability(int test_or, int test_dir)
                  "We cannot learn whether we are usable, and will not "
                  "be able to advertise ourself.");
     }
-    return;
+    return 0;
   }
+  return 1;
+}
 
-  if (test_or && (!orport_reachable || !circuit_enough_testing_circs())) {
-    extend_info_t *ei = extend_info_from_router(me);
+/** Some time has passed, or we just got new directory information.
+ * See if we currently believe our ORPort or DirPort to be
+ * unreachable. If so, launch a new test for it.
+ *
+ * For ORPort, we simply try making a circuit that ends at ourselves.
+ * Success is noticed in onionskin_answer().
+ *
+ * For DirPort, we make a connection via Tor to our DirPort and ask
+ * for our own server descriptor.
+ * Success is noticed in connection_dir_client_reached_eof().
+ */
+void
+router_do_reachability_checks(int test_or, int test_dir)
+{
+  const routerinfo_t *me = router_get_my_routerinfo();
+  const or_options_t *options = get_options();
+  int orport_reachable = check_whether_orport_reachable(options);
+  tor_addr_t addr;
+
+  if (router_should_check_reachability(test_or, test_dir)) {
+    if (test_or && (!orport_reachable || !circuit_enough_testing_circs())) {
+      extend_info_t *ei = extend_info_from_router(me);
+      /* XXX IPv6 self testing */
+      log_info(LD_CIRC, "Testing %s of my ORPort: %s:%d.",
+               !orport_reachable ? "reachability" : "bandwidth",
+               fmt_addr32(me->addr), me->or_port);
+      circuit_launch_by_extend_info(CIRCUIT_PURPOSE_TESTING, ei,
+                              CIRCLAUNCH_NEED_CAPACITY|CIRCLAUNCH_IS_INTERNAL);
+      extend_info_free(ei);
+    }
+
     /* XXX IPv6 self testing */
-    log_info(LD_CIRC, "Testing %s of my ORPort: %s:%d.",
-             !orport_reachable ? "reachability" : "bandwidth",
-             fmt_addr32(me->addr), me->or_port);
-    circuit_launch_by_extend_info(CIRCUIT_PURPOSE_TESTING, ei,
-                            CIRCLAUNCH_NEED_CAPACITY|CIRCLAUNCH_IS_INTERNAL);
-    extend_info_free(ei);
-  }
-
-  /* XXX IPv6 self testing */
-  tor_addr_from_ipv4h(&addr, me->addr);
-  if (test_dir && !check_whether_dirport_reachable(options) &&
-      !connection_get_by_type_addr_port_purpose(
-                CONN_TYPE_DIR, &addr, me->dir_port,
-                DIR_PURPOSE_FETCH_SERVERDESC)) {
-    tor_addr_port_t my_orport, my_dirport;
-    memcpy(&my_orport.addr, &addr, sizeof(addr));
-    memcpy(&my_dirport.addr, &addr, sizeof(addr));
-    my_orport.port = me->or_port;
-    my_dirport.port = me->dir_port;
-    /* ask myself, via tor, for my server descriptor. */
-    directory_request_t *req =
-      directory_request_new(DIR_PURPOSE_FETCH_SERVERDESC);
-    directory_request_set_or_addr_port(req, &my_orport);
-    directory_request_set_dir_addr_port(req, &my_dirport);
-    directory_request_set_directory_id_digest(req,
+    tor_addr_from_ipv4h(&addr, me->addr);
+    if (test_dir && !check_whether_dirport_reachable(options) &&
+        !connection_get_by_type_addr_port_purpose(
+                  CONN_TYPE_DIR, &addr, me->dir_port,
+                  DIR_PURPOSE_FETCH_SERVERDESC)) {
+      tor_addr_port_t my_orport, my_dirport;
+      memcpy(&my_orport.addr, &addr, sizeof(addr));
+      memcpy(&my_dirport.addr, &addr, sizeof(addr));
+      my_orport.port = me->or_port;
+      my_dirport.port = me->dir_port;
+      /* ask myself, via tor, for my server descriptor. */
+      directory_request_t *req =
+        directory_request_new(DIR_PURPOSE_FETCH_SERVERDESC);
+      directory_request_set_or_addr_port(req, &my_orport);
+      directory_request_set_dir_addr_port(req, &my_dirport);
+      directory_request_set_directory_id_digest(req,
                                               me->cache_info.identity_digest);
-    // ask via an anon circuit, connecting to our dirport.
-    directory_request_set_indirection(req, DIRIND_ANON_DIRPORT);
-    directory_request_set_resource(req, "authority.z");
-    directory_initiate_request(req);
-    directory_request_free(req);
+      // ask via an anon circuit, connecting to our dirport.
+      directory_request_set_indirection(req, DIRIND_ANON_DIRPORT);
+      directory_request_set_resource(req, "authority.z");
+      directory_initiate_request(req);
+      directory_request_free(req);
+    }
   }
 }
 
@@ -1534,7 +1536,7 @@ router_dirport_found_reachable(void)
                && check_whether_orport_reachable(options) ?
                " Publishing server descriptor." : "");
     can_reach_dir_port = 1;
-    if (decide_to_advertise_dirport(options, me->dir_port)) {
+    if (router_should_advertise_dirport(options, me->dir_port)) {
       mark_my_descriptor_dirty("DirPort found reachable");
       /* This is a significant enough change to upload immediately,
        * at least in a test network */
@@ -2513,7 +2515,7 @@ mark_my_descriptor_dirty(const char *reason)
 /** How frequently will we republish our descriptor because of large (factor
  * of 2) shifts in estimated bandwidth? Note: We don't use this constant
  * if our previous bandwidth estimate was exactly 0. */
-#define MAX_BANDWIDTH_CHANGE_FREQ (20*60)
+#define MAX_BANDWIDTH_CHANGE_FREQ (3*60*60)
 
 /** Check whether bandwidth has changed a lot since the last time we announced
  * bandwidth. If so, mark our descriptor dirty. */
@@ -2928,14 +2930,14 @@ router_dump_router_to_string(routerinfo_t *router,
     router->nickname,
     address,
     router->or_port,
-    decide_to_advertise_dirport(options, router->dir_port),
+    router_should_advertise_dirport(options, router->dir_port),
     ed_cert_line ? ed_cert_line : "",
     extra_or_address ? extra_or_address : "",
     router->platform,
     proto_line,
     published,
     fingerprint,
-    stats_n_seconds_working,
+    get_uptime(),
     (int) router->bandwidthrate,
     (int) router->bandwidthburst,
     (int) router->bandwidthcapacity,
@@ -2954,6 +2956,18 @@ router_dump_router_to_string(routerinfo_t *router,
     if (strchr(ci, '\n') || strchr(ci, '\r'))
       ci = escaped(ci);
     smartlist_add_asprintf(chunks, "contact %s\n", ci);
+  }
+
+  if (options->BridgeRelay) {
+    const char *bd;
+    if (options->BridgeDistribution && strlen(options->BridgeDistribution)) {
+      bd = options->BridgeDistribution;
+    } else {
+      bd = "any";
+    }
+    if (strchr(bd, '\n') || strchr(bd, '\r'))
+      bd = escaped(bd);
+    smartlist_add_asprintf(chunks, "bridge-distribution-request %s\n", bd);
   }
 
   if (router->onion_curve25519_pkey) {
@@ -2990,7 +3004,7 @@ router_dump_router_to_string(routerinfo_t *router,
     tor_free(p6);
   }
 
-  if (decide_to_advertise_begindir(options,
+  if (router_should_advertise_begindir(options,
                                    router->supports_tunnelled_dir_requests)) {
     smartlist_add_strdup(chunks, "tunnelled-dir-server\n");
   }
@@ -3686,6 +3700,7 @@ router_free_all(void)
   crypto_pk_free(lastonionkey);
   crypto_pk_free(server_identitykey);
   crypto_pk_free(client_identitykey);
+
   tor_mutex_free(key_lock);
   routerinfo_free(desc_routerinfo);
   extrainfo_free(desc_extrainfo);

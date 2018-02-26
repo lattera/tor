@@ -23,6 +23,7 @@
 #include "config.h"
 #include "networkstatus.h"
 #include "directory.h"
+#include "dirvote.h"
 #include "nodelist.h"
 #include "routerlist.h"
 #include "statefile.h"
@@ -288,7 +289,7 @@ helper_add_hsdir_to_networkstatus(networkstatus_t *ns,
 
   memcpy(rs->identity_digest, identity, DIGEST_LEN);
   rs->is_hs_dir = is_hsdir;
-  rs->supports_v3_hsdir = 1;
+  rs->pv.supports_v3_hsdir = 1;
   strlcpy(rs->nickname, nickname, sizeof(rs->nickname));
   tor_addr_parse(&ipv4_addr, "1.2.3.4");
   ri->addr = tor_addr_to_ipv4h(&ipv4_addr);
@@ -808,26 +809,41 @@ test_time_between_tp_and_srv(void *arg)
 
   ret = parse_rfc1123_time("Sat, 26 Oct 1985 00:00:00 UTC", &ns.valid_after);
   tt_int_op(ret, OP_EQ, 0);
+  ret = parse_rfc1123_time("Sat, 26 Oct 1985 01:00:00 UTC", &ns.fresh_until);
+  tt_int_op(ret, OP_EQ, 0);
+  dirvote_recalculate_timing(get_options(), ns.valid_after);
   ret = hs_in_period_between_tp_and_srv(&ns, 0);
   tt_int_op(ret, OP_EQ, 0);
 
   ret = parse_rfc1123_time("Sat, 26 Oct 1985 11:00:00 UTC", &ns.valid_after);
   tt_int_op(ret, OP_EQ, 0);
+  ret = parse_rfc1123_time("Sat, 26 Oct 1985 12:00:00 UTC", &ns.fresh_until);
+  tt_int_op(ret, OP_EQ, 0);
+  dirvote_recalculate_timing(get_options(), ns.valid_after);
   ret = hs_in_period_between_tp_and_srv(&ns, 0);
   tt_int_op(ret, OP_EQ, 0);
 
   ret = parse_rfc1123_time("Sat, 26 Oct 1985 12:00:00 UTC", &ns.valid_after);
   tt_int_op(ret, OP_EQ, 0);
+  ret = parse_rfc1123_time("Sat, 26 Oct 1985 13:00:00 UTC", &ns.fresh_until);
+  tt_int_op(ret, OP_EQ, 0);
+  dirvote_recalculate_timing(get_options(), ns.valid_after);
   ret = hs_in_period_between_tp_and_srv(&ns, 0);
   tt_int_op(ret, OP_EQ, 1);
 
   ret = parse_rfc1123_time("Sat, 26 Oct 1985 23:00:00 UTC", &ns.valid_after);
   tt_int_op(ret, OP_EQ, 0);
+  ret = parse_rfc1123_time("Sat, 27 Oct 1985 00:00:00 UTC", &ns.fresh_until);
+  tt_int_op(ret, OP_EQ, 0);
+  dirvote_recalculate_timing(get_options(), ns.valid_after);
   ret = hs_in_period_between_tp_and_srv(&ns, 0);
   tt_int_op(ret, OP_EQ, 1);
 
-  ret = parse_rfc1123_time("Sat, 26 Oct 1985 00:00:00 UTC", &ns.valid_after);
+  ret = parse_rfc1123_time("Sat, 27 Oct 1985 00:00:00 UTC", &ns.valid_after);
   tt_int_op(ret, OP_EQ, 0);
+  ret = parse_rfc1123_time("Sat, 27 Oct 1985 01:00:00 UTC", &ns.fresh_until);
+  tt_int_op(ret, OP_EQ, 0);
+  dirvote_recalculate_timing(get_options(), ns.valid_after);
   ret = hs_in_period_between_tp_and_srv(&ns, 0);
   tt_int_op(ret, OP_EQ, 0);
 
@@ -955,12 +971,12 @@ helper_init_service(time_t now)
 
 /* Helper function to set the RFC 1123 time string into t. */
 static void
-set_consensus_times(const char *time, time_t *t)
+set_consensus_times(const char *timestr, time_t *t)
 {
-  tt_assert(time);
+  tt_assert(timestr);
   tt_assert(t);
 
-  int ret = parse_rfc1123_time(time, t);
+  int ret = parse_rfc1123_time(timestr, t);
   tt_int_op(ret, OP_EQ, 0);
 
  done:
@@ -1037,7 +1053,7 @@ are_responsible_hsdirs_equal(void)
 {
   int count = 0;
   tt_int_op(smartlist_len(client_responsible_hsdirs), OP_EQ, 6);
-  tt_int_op(smartlist_len(service_responsible_hsdirs), OP_EQ, 6);
+  tt_int_op(smartlist_len(service_responsible_hsdirs), OP_EQ, 8);
 
   SMARTLIST_FOREACH_BEGIN(client_responsible_hsdirs,
                           const routerstatus_t *, c_rs) {
@@ -1314,6 +1330,7 @@ run_reachability_scenario(const reachability_cfg_t *cfg, int num_scenario)
                       &mock_service_ns->valid_until);
   set_consensus_times(cfg->service_valid_until,
                       &mock_service_ns->fresh_until);
+  dirvote_recalculate_timing(get_options(), mock_service_ns->valid_after);
   /* Set client consensus time. */
   set_consensus_times(cfg->client_valid_after,
                       &mock_client_ns->valid_after);
@@ -1321,6 +1338,7 @@ run_reachability_scenario(const reachability_cfg_t *cfg, int num_scenario)
                       &mock_client_ns->valid_until);
   set_consensus_times(cfg->client_valid_until,
                       &mock_client_ns->fresh_until);
+  dirvote_recalculate_timing(get_options(), mock_client_ns->valid_after);
 
   /* New time period checks for this scenario. */
   tt_int_op(hs_in_period_between_tp_and_srv(mock_service_ns, 0), OP_EQ,
@@ -1397,7 +1415,7 @@ run_reachability_scenario(const reachability_cfg_t *cfg, int num_scenario)
                             cfg->client_fetch_next_desc, 0,
                             service_responsible_hsdirs);
   cleanup_nodelist();
-  tt_int_op(smartlist_len(service_responsible_hsdirs), OP_EQ, 6);
+  tt_int_op(smartlist_len(service_responsible_hsdirs), OP_EQ, 8);
 
   UNMOCK(networkstatus_get_latest_consensus);
   UNMOCK(networkstatus_get_live_consensus);
@@ -1544,6 +1562,7 @@ helper_set_consensus_and_system_time(networkstatus_t *ns, int position)
   } else {
     tt_assert(0);
   }
+  dirvote_recalculate_timing(get_options(), ns->valid_after);
 
   /* Set system time: pretend to be just 2 minutes before consensus expiry */
   real_time = ns->valid_until - 120;
@@ -1586,7 +1605,7 @@ helper_test_hsdir_sync(networkstatus_t *ns,
   /* Cleanup right now so we don't memleak on error. */
   cleanup_nodelist();
   /* Check that previous hsdirs were populated */
-  tt_int_op(smartlist_len(desc->previous_hsdirs), OP_EQ, 6);
+  tt_int_op(smartlist_len(desc->previous_hsdirs), OP_EQ, 8);
 
   /* 3) Initialize client time */
   helper_set_consensus_and_system_time(ns, client_position);

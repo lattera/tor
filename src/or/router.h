@@ -36,7 +36,9 @@ int get_onion_key_lifetime(void);
 int get_onion_key_grace_period(void);
 
 di_digest256_map_t *construct_ntor_key_map(void);
-void ntor_key_map_free(di_digest256_map_t *map);
+void ntor_key_map_free_(di_digest256_map_t *map);
+#define ntor_key_map_free(map) \
+  FREE_AND_NULL(di_digest256_map_t, ntor_key_map_free_, (map))
 
 int router_initialize_tls_context(void);
 int init_keys(void);
@@ -45,7 +47,7 @@ int init_keys_client(void);
 int check_whether_orport_reachable(const or_options_t *options);
 int check_whether_dirport_reachable(const or_options_t *options);
 int dir_server_mode(const or_options_t *options);
-void consider_testing_reachability(int test_or, int test_dir);
+void router_do_reachability_checks(int test_or, int test_dir);
 void router_orport_found_reachable(void);
 void router_dirport_found_reachable(void);
 void router_perform_bandwidth_test(int num_circs, time_t now);

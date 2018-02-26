@@ -3062,7 +3062,7 @@ unescape_string(const char *s, char **result, size_t *size_out)
 
 /** Removes enclosing quotes from <b>path</b> and unescapes quotes between the
  * enclosing quotes. Backslashes are not unescaped. Return the unquoted
- * <b>path</b> on sucess or 0 if <b>path</b> is not quoted correctly. */
+ * <b>path</b> on success or 0 if <b>path</b> is not quoted correctly. */
 char *
 get_unquoted_path(const char *path)
 {
@@ -3929,7 +3929,7 @@ format_number_sigsafe(unsigned long x, char *buf, int buf_len,
  * call it with a signed int and an unsigned char, and since the C standard
  * does not guarantee that an int is wider than a char (an int must be at
  * least 16 bits but it is permitted for a char to be that wide as well), we
- * can't assume a signed int is sufficient to accomodate an unsigned char.
+ * can't assume a signed int is sufficient to accommodate an unsigned char.
  * Thus, format_helper_exit_status() will still need to emit any require '-'
  * on its own.
  *
@@ -3959,7 +3959,7 @@ format_dec_number_sigsafe(unsigned long x, char *buf, int buf_len)
  *
  * The format of <b>hex_errno</b> is: "CHILD_STATE/ERRNO\n", left-padded
  * with spaces. CHILD_STATE indicates where
- * in the processs of starting the child process did the failure occur (see
+ * in the process of starting the child process did the failure occur (see
  * CHILD_STATE_* macros for definition), and SAVED_ERRNO is the value of
  * errno when the failure occurred.
  *
@@ -4744,7 +4744,7 @@ environment_variable_names_equal(const char *s1, const char *s2)
 /** Free <b>env</b> (assuming it was produced by
  * process_environment_make). */
 void
-process_environment_free(process_environment_t *env)
+process_environment_free_(process_environment_t *env)
 {
   if (env == NULL) return;
 

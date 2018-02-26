@@ -424,11 +424,19 @@ config_generic_service(const config_line_t *line_,
     }
   }
 
-  /* Check if we are configured in non anonymous mode and single hop mode
-   * meaning every service become single onion. */
-  if (rend_service_allow_non_anonymous_connection(options) &&
-      rend_service_non_anonymous_mode_enabled(options)) {
+  /* Check if we are configured in non anonymous mode meaning every service
+   * becomes a single onion service. */
+  if (rend_service_non_anonymous_mode_enabled(options)) {
     config->is_single_onion = 1;
+    /* We will add support for IPv6-only v3 single onion services in a future
+     * Tor version. This won't catch "ReachableAddresses reject *4", but that
+     * option doesn't work anyway. */
+    if (options->ClientUseIPv4 == 0 && config->version == HS_VERSION_THREE) {
+      log_warn(LD_CONFIG, "IPv6-only v3 single onion services are not "
+               "supported. Set HiddenServiceSingleHopMode 0 and "
+               "HiddenServiceNonAnonymousMode 0, or set ClientUseIPv4 1.");
+      goto err;
+    }
   }
 
   /* Success */
@@ -550,7 +558,7 @@ hs_config_service_all(const or_options_t *options, int validate_only)
   }
 
   /* In non validation mode, we'll stage those services we just successfully
-   * configured. Service ownership is transfered from the list to the global
+   * configured. Service ownership is transferred from the list to the global
    * state. If any service is invalid, it will be removed from the list and
    * freed. All versions are handled in that function. */
   if (!validate_only) {

@@ -143,6 +143,10 @@ DECLARE_TYPED_DIGESTMAP_FNS(dsmap_, digest_ds_map_t, download_status_t)
 #define DSMAP_FOREACH(map, keyvar, valvar) \
   DIGESTMAP_FOREACH(dsmap_to_digestmap(map), keyvar, download_status_t *, \
                     valvar)
+#define eimap_free(map, fn) MAP_FREE_AND_NULL(eimap, (map), (fn))
+#define rimap_free(map, fn) MAP_FREE_AND_NULL(rimap, (map), (fn))
+#define dsmap_free(map, fn) MAP_FREE_AND_NULL(dsmap, (map), (fn))
+#define sdmap_free(map, fn) MAP_FREE_AND_NULL(sdmap, (map), (fn))
 
 /* Forward declaration for cert_list_t */
 typedef struct cert_list_t cert_list_t;
@@ -150,7 +154,8 @@ typedef struct cert_list_t cert_list_t;
 /* static function prototypes */
 static int compute_weighted_bandwidths(const smartlist_t *sl,
                                        bandwidth_weight_rule_t rule,
-                                       double **bandwidths_out);
+                                       double **bandwidths_out,
+                                       double *total_bandwidth_out);
 static const routerstatus_t *router_pick_trusteddirserver_impl(
                 const smartlist_t *sourcelist, dirinfo_type_t auth,
                 int flags, int *n_busy_out);
@@ -158,7 +163,6 @@ static const routerstatus_t *router_pick_dirserver_generic(
                               smartlist_t *sourcelist,
                               dirinfo_type_t type, int flags);
 static void mark_all_dirservers_up(smartlist_t *server_list);
-static void dir_server_free(dir_server_t *ds);
 static int signed_desc_digest_is_recognized(signed_descriptor_t *desc);
 static const char *signed_descriptor_get_body_impl(
                                               const signed_descriptor_t *desc,
@@ -231,7 +235,7 @@ get_n_authorities(dirinfo_type_t type)
   return n;
 }
 
-/** Initialise schedule, want_authority, and increment on in the download
+/** Initialise schedule, want_authority, and increment_on in the download
  * status dlstatus, then call download_status_reset() on it.
  * It is safe to call this function or download_status_reset() multiple times
  * on a new dlstatus. But it should *not* be called after a dlstatus has been
@@ -363,7 +367,7 @@ list_authority_ids_with_downloads, (void))
       smartlist_add(ids, tmp);
     }
   }
-  /* else definitely no downlaods going since nothing even has a cert list */
+  /* else definitely no downloads going since nothing even has a cert list */
 
   return ids;
 }
@@ -442,9 +446,12 @@ download_status_for_authority_id_and_sk,(const char *id_digest,
   return dl;
 }
 
+#define cert_list_free(val) \
+  FREE_AND_NULL(cert_list_t, cert_list_free_, (val))
+
 /** Release all space held by a cert_list_t */
 static void
-cert_list_free(cert_list_t *cl)
+cert_list_free_(cert_list_t *cl)
 {
   if (!cl)
     return;
@@ -458,9 +465,9 @@ cert_list_free(cert_list_t *cl)
 
 /** Wrapper for cert_list_free so we can pass it to digestmap_free */
 static void
-cert_list_free_(void *cl)
+cert_list_free_void(void *cl)
 {
-  cert_list_free(cl);
+  cert_list_free_(cl);
 }
 
 /** Reload the cached v3 key certificates from the cached-certs file in
@@ -472,7 +479,7 @@ trusted_dirs_reload_certs(void)
   char *contents;
   int r;
 
-  filename = get_datadir_fname("cached-certs");
+  filename = get_cachedir_fname("cached-certs");
   contents = read_file_to_str(filename, RFTS_IGNORE_MISSING, NULL);
   tor_free(filename);
   if (!contents)
@@ -661,7 +668,7 @@ trusted_dirs_flush_certs_to_disk(void)
           });
   } DIGESTMAP_FOREACH_END;
 
-  filename = get_datadir_fname("cached-certs");
+  filename = get_cachedir_fname("cached-certs");
   if (write_chunks_to_file(filename, chunks, 0, 0)) {
     log_warn(LD_FS, "Error writing certificates to disk.");
   }
@@ -1163,7 +1170,7 @@ authority_certs_fetch_missing(networkstatus_t *status, time_t now,
     } SMARTLIST_FOREACH_END(voter);
   }
 
-  /* Bridge clients look up the node for the dir_hint  */
+  /* Bridge clients look up the node for the dir_hint */
   const node_t *node = NULL;
   /* All clients, including bridge clients, look up the routerstatus for the
    * dir_hint */
@@ -1338,7 +1345,7 @@ static int
 signed_desc_append_to_journal(signed_descriptor_t *desc,
                               desc_store_t *store)
 {
-  char *fname = get_datadir_fname_suffix(store->fname_base, ".new");
+  char *fname = get_cachedir_fname_suffix(store->fname_base, ".new");
   const char *body = signed_descriptor_get_body_impl(desc,1);
   size_t len = desc->signed_descriptor_len + desc->annotations_len;
 
@@ -1409,8 +1416,8 @@ router_rebuild_store(int flags, desc_store_t *store)
 
   log_info(LD_DIR, "Rebuilding %s cache", store->description);
 
-  fname = get_datadir_fname(store->fname_base);
-  fname_tmp = get_datadir_fname_suffix(store->fname_base, ".tmp");
+  fname = get_cachedir_fname(store->fname_base);
+  fname_tmp = get_cachedir_fname_suffix(store->fname_base, ".tmp");
 
   chunk_list = smartlist_new();
 
@@ -1507,7 +1514,7 @@ router_rebuild_store(int flags, desc_store_t *store)
   } SMARTLIST_FOREACH_END(sd);
 
   tor_free(fname);
-  fname = get_datadir_fname_suffix(store->fname_base, ".new");
+  fname = get_cachedir_fname_suffix(store->fname_base, ".new");
   write_str_to_file(fname, "", 1);
 
   r = 0;
@@ -1537,7 +1544,7 @@ router_reload_router_list_impl(desc_store_t *store)
   int extrainfo = (store->type == EXTRAINFO_STORE);
   store->journal_len = store->store_len = 0;
 
-  fname = get_datadir_fname(store->fname_base);
+  fname = get_cachedir_fname(store->fname_base);
 
   if (store->mmap) {
     /* get rid of it first */
@@ -1564,7 +1571,7 @@ router_reload_router_list_impl(desc_store_t *store)
   }
 
   tor_free(fname);
-  fname = get_datadir_fname_suffix(store->fname_base, ".new");
+  fname = get_cachedir_fname_suffix(store->fname_base, ".new");
   /* don't load empty files - we wouldn't get any data, even if we tried */
   if (file_status(fname) == FN_FILE)
     contents = read_file_to_str(fname, RFTS_BIN|RFTS_IGNORE_MISSING, &st);
@@ -2506,7 +2513,7 @@ smartlist_choose_node_by_bandwidth_weights(const smartlist_t *sl,
   double *bandwidths_dbl=NULL;
   uint64_t *bandwidths_u64=NULL;
 
-  if (compute_weighted_bandwidths(sl, rule, &bandwidths_dbl) < 0)
+  if (compute_weighted_bandwidths(sl, rule, &bandwidths_dbl, NULL) < 0)
     return NULL;
 
   bandwidths_u64 = tor_calloc(smartlist_len(sl), sizeof(uint64_t));
@@ -2526,18 +2533,24 @@ smartlist_choose_node_by_bandwidth_weights(const smartlist_t *sl,
  * smartlist_choose_node_by_bandwidth_weights, compute weighted bandwidth
  * values for each node and store them in a freshly allocated
  * *<b>bandwidths_out</b> of the same length as <b>sl</b>, and holding results
- * as doubles. Return 0 on success, -1 on failure. */
+ * as doubles. If <b>total_bandwidth_out</b> is non-NULL, set it to the total
+ * of all the bandwidths.
+ * Return 0 on success, -1 on failure. */
 static int
 compute_weighted_bandwidths(const smartlist_t *sl,
                             bandwidth_weight_rule_t rule,
-                            double **bandwidths_out)
+                            double **bandwidths_out,
+                            double *total_bandwidth_out)
 {
   int64_t weight_scale;
   double Wg = -1, Wm = -1, We = -1, Wd = -1;
   double Wgb = -1, Wmb = -1, Web = -1, Wdb = -1;
-  uint64_t weighted_bw = 0;
   guardfraction_bandwidth_t guardfraction_bw;
-  double *bandwidths;
+  double *bandwidths = NULL;
+  double total_bandwidth = 0.0;
+
+  tor_assert(sl);
+  tor_assert(bandwidths_out);
 
   /* Can't choose exit and guard at same time */
   tor_assert(rule == NO_WEIGHTING ||
@@ -2545,6 +2558,12 @@ compute_weighted_bandwidths(const smartlist_t *sl,
              rule == WEIGHT_FOR_GUARD ||
              rule == WEIGHT_FOR_MID ||
              rule == WEIGHT_FOR_DIR);
+
+  *bandwidths_out = NULL;
+
+  if (total_bandwidth_out) {
+    *total_bandwidth_out = 0.0;
+  }
 
   if (smartlist_len(sl) == 0) {
     log_info(LD_CIRC,
@@ -2633,7 +2652,7 @@ compute_weighted_bandwidths(const smartlist_t *sl,
     is_dir = node_is_dir(node);
     if (node->rs) {
       if (!node->rs->has_bandwidth) {
-        /* This should never happen, unless all the authorites downgrade
+        /* This should never happen, unless all the authorities downgrade
          * to 0.2.0 or rogue routerstatuses get inserted into our consensus. */
         if (! warned_missing_bw) {
           log_warn(LD_BUG,
@@ -2706,16 +2725,21 @@ compute_weighted_bandwidths(const smartlist_t *sl,
       final_weight = weight*this_bw;
     }
 
-    bandwidths[node_sl_idx] = final_weight + 0.5;
+    bandwidths[node_sl_idx] = final_weight;
+    total_bandwidth += final_weight;
   } SMARTLIST_FOREACH_END(node);
 
   log_debug(LD_CIRC, "Generated weighted bandwidths for rule %s based "
             "on weights "
-            "Wg=%f Wm=%f We=%f Wd=%f with total bw "U64_FORMAT,
+            "Wg=%f Wm=%f We=%f Wd=%f with total bw %f",
             bandwidth_weight_rule_to_string(rule),
-            Wg, Wm, We, Wd, U64_PRINTF_ARG(weighted_bw));
+            Wg, Wm, We, Wd, total_bandwidth);
 
   *bandwidths_out = bandwidths;
+
+  if (total_bandwidth_out) {
+    *total_bandwidth_out = total_bandwidth;
+  }
 
   return 0;
 }
@@ -2733,7 +2757,8 @@ frac_nodes_with_descriptors(const smartlist_t *sl,
   if (smartlist_len(sl) == 0)
     return 0.0;
 
-  if (compute_weighted_bandwidths(sl, rule, &bandwidths) < 0) {
+  if (compute_weighted_bandwidths(sl, rule, &bandwidths, &total) < 0 ||
+      total <= 0.0) {
     int n_with_descs = 0;
     SMARTLIST_FOREACH(sl, const node_t *, node, {
       if (node_has_descriptor(node))
@@ -2742,18 +2767,13 @@ frac_nodes_with_descriptors(const smartlist_t *sl,
     return ((double)n_with_descs) / (double)smartlist_len(sl);
   }
 
-  total = present = 0.0;
+  present = 0.0;
   SMARTLIST_FOREACH_BEGIN(sl, const node_t *, node) {
-    const double bw = bandwidths[node_sl_idx];
-    total += bw;
     if (node_has_descriptor(node))
-      present += bw;
+      present += bandwidths[node_sl_idx];
   } SMARTLIST_FOREACH_END(node);
 
   tor_free(bandwidths);
-
-  if (total < 1.0)
-    return 0;
 
   return present / total;
 }
@@ -2825,7 +2845,10 @@ router_choose_random_node(smartlist_t *excludedsmartlist,
     }
   } SMARTLIST_FOREACH_END(node);
 
-  if ((r = routerlist_find_my_routerinfo()))
+  /* If the node_t is not found we won't be to exclude ourself but we
+   * won't be able to pick ourself in router_choose_random_node() so
+   * this is fine to at least try with our routerinfo_t object. */
+  if ((r = router_get_my_routerinfo()))
     routerlist_add_node_and_family(excludednodes, r);
 
   router_add_running_nodes_to_smartlist(sl, need_uptime, need_capacity,
@@ -3150,7 +3173,7 @@ router_get_routerlist(void)
 
 /** Free all storage held by <b>router</b>. */
 void
-routerinfo_free(routerinfo_t *router)
+routerinfo_free_(routerinfo_t *router)
 {
   if (!router)
     return;
@@ -3180,7 +3203,7 @@ routerinfo_free(routerinfo_t *router)
 
 /** Release all storage held by <b>extrainfo</b> */
 void
-extrainfo_free(extrainfo_t *extrainfo)
+extrainfo_free_(extrainfo_t *extrainfo)
 {
   if (!extrainfo)
     return;
@@ -3192,9 +3215,12 @@ extrainfo_free(extrainfo_t *extrainfo)
   tor_free(extrainfo);
 }
 
+#define signed_descriptor_free(val) \
+  FREE_AND_NULL(signed_descriptor_t, signed_descriptor_free_, (val))
+
 /** Release storage held by <b>sd</b>. */
 static void
-signed_descriptor_free(signed_descriptor_t *sd)
+signed_descriptor_free_(signed_descriptor_t *sd)
 {
   if (!sd)
     return;
@@ -3248,21 +3274,21 @@ signed_descriptor_from_routerinfo(routerinfo_t *ri)
 
 /** Helper: free the storage held by the extrainfo_t in <b>e</b>. */
 static void
-extrainfo_free_(void *e)
+extrainfo_free_void(void *e)
 {
-  extrainfo_free(e);
+  extrainfo_free_(e);
 }
 
 /** Free all storage held by a routerlist <b>rl</b>. */
 void
-routerlist_free(routerlist_t *rl)
+routerlist_free_(routerlist_t *rl)
 {
   if (!rl)
     return;
   rimap_free(rl->identity_map, NULL);
   sdmap_free(rl->desc_digest_map, NULL);
   sdmap_free(rl->desc_by_eid_map, NULL);
-  eimap_free(rl->extra_info_map, extrainfo_free_);
+  eimap_free(rl->extra_info_map, extrainfo_free_void);
   SMARTLIST_FOREACH(rl->routers, routerinfo_t *, r,
                     routerinfo_free(r));
   SMARTLIST_FOREACH(rl->old_routers, signed_descriptor_t *, sd,
@@ -3754,7 +3780,7 @@ routerlist_free_all(void)
   smartlist_free(fallback_dir_servers);
   trusted_dir_servers = fallback_dir_servers = NULL;
   if (trusted_dir_certs) {
-    digestmap_free(trusted_dir_certs, cert_list_free_);
+    digestmap_free(trusted_dir_certs, cert_list_free_void);
     trusted_dir_certs = NULL;
   }
 }
@@ -4531,7 +4557,7 @@ signed_desc_digest_is_recognized(signed_descriptor_t *desc)
 void
 update_all_descriptor_downloads(time_t now)
 {
-  if (get_options()->DisableNetwork)
+  if (should_delay_dir_fetches(get_options(), NULL))
     return;
   update_router_descriptor_downloads(now);
   update_microdesc_downloads(now);
@@ -4722,7 +4748,7 @@ dir_server_add(dir_server_t *ent)
 
 /** Free storage held in <b>cert</b>. */
 void
-authority_cert_free(authority_cert_t *cert)
+authority_cert_free_(authority_cert_t *cert)
 {
   if (!cert)
     return;
@@ -4734,9 +4760,12 @@ authority_cert_free(authority_cert_t *cert)
   tor_free(cert);
 }
 
+#define dir_server_free(val) \
+  FREE_AND_NULL(dir_server_t, dir_server_free_, (val))
+
 /** Free storage held in <b>ds</b>. */
 static void
-dir_server_free(dir_server_t *ds)
+dir_server_free_(dir_server_t *ds)
 {
   if (!ds)
     return;
@@ -5010,6 +5039,11 @@ launch_descriptor_downloads(int purpose,
       log_debug(LD_DIR,
                 "There are enough downloadable %ss to launch requests.",
                 descname);
+    } else if (! router_have_minimum_dir_info()) {
+      log_debug(LD_DIR,
+                "We are only missing %d %ss, but we'll fetch anyway, since "
+                "we don't yet have enough directory info.",
+                n_downloadable, descname);
     } else {
 
       /* should delay */
@@ -5173,15 +5207,30 @@ update_consensus_router_descriptor_downloads(time_t now, int is_vote,
     SMARTLIST_FOREACH_BEGIN(no_longer_old, signed_descriptor_t *, sd) {
         const char *msg;
         was_router_added_t r;
+        time_t tmp_cert_expiration_time;
         routerinfo_t *ri = routerlist_reparse_old(rl, sd);
         if (!ri) {
           log_warn(LD_BUG, "Failed to re-parse a router.");
           continue;
         }
+        /* need to remember for below, since add_to_routerlist may free. */
+        tmp_cert_expiration_time = ri->cert_expiration_time;
+
         r = router_add_to_routerlist(ri, &msg, 1, 0);
         if (WRA_WAS_OUTDATED(r)) {
-          log_warn(LD_DIR, "Couldn't add re-parsed router: %s",
+          log_warn(LD_DIR, "Couldn't add re-parsed router: %s. This isn't "
+                   "usually a big deal, but you should make sure that your "
+                   "clock and timezone are set correctly.",
                    msg?msg:"???");
+          if (r == ROUTER_CERTS_EXPIRED) {
+            char time_cons[ISO_TIME_LEN+1];
+            char time_cert_expires[ISO_TIME_LEN+1];
+            format_iso_time(time_cons, consensus->valid_after);
+            format_iso_time(time_cert_expires, tmp_cert_expiration_time);
+            log_warn(LD_DIR, "  (I'm looking at a consensus from %s; This "
+                     "router's certificates began expiring at %s.)",
+                     time_cons, time_cert_expires);
+          }
         }
     } SMARTLIST_FOREACH_END(sd);
     routerlist_assert_ok(rl);
@@ -5616,11 +5665,11 @@ routerstatus_version_supports_extend2_cells(const routerstatus_t *rs,
     return allow_unknown_versions;
   }
 
-  if (!rs->protocols_known) {
+  if (!rs->pv.protocols_known) {
     return allow_unknown_versions;
   }
 
-  return rs->supports_extend2_cells;
+  return rs->pv.supports_extend2_cells;
 }
 
 /** Assert that the internal representation of <b>rl</b> is

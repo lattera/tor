@@ -3,11 +3,6 @@
  * Copyright (c) 2007-2017, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
-extern const char tor_git_revision[];
-/* Ordinarily defined in tor_main.c; this bit is just here to provide one
- * since we're not linking to tor_main.c */
-const char tor_git_revision[] = "";
-
 /**
  * \file bench.c
  * \brief Benchmarks for lower level Tor modules.
@@ -723,6 +718,8 @@ main(int argc, const char **argv)
   init_logging(1);
   options->command = CMD_RUN_UNITTESTS;
   options->DataDirectory = tor_strdup("");
+  options->KeyDirectory = tor_strdup("");
+  options->CacheDirectory = tor_strdup("");
   options_init(options);
   if (set_options(options, &errmsg) < 0) {
     printf("Failed to set initial options: %s\n", errmsg);

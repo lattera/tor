@@ -9,6 +9,9 @@
 #define SCHEDULER_KIST_PRIVATE
 #include "scheduler.h"
 #include "main.h"
+#include "buffers.h"
+#define TOR_CHANNEL_INTERNAL_
+#include "channeltls.h"
 
 #include <event2/event.h>
 
@@ -168,6 +171,8 @@ STATIC smartlist_t *channels_pending = NULL;
  */
 STATIC struct event *run_sched_ev = NULL;
 
+static int have_logged_kist_suddenly_disabled = 0;
+
 /*****************************************************************************
  * Scheduling system static function definitions
  *
@@ -249,13 +254,32 @@ select_scheduler(void)
     case SCHEDULER_KIST:
       if (!scheduler_can_use_kist()) {
 #ifdef HAVE_KIST_SUPPORT
-        log_notice(LD_SCHED, "Scheduler type KIST has been disabled by "
-                             "the consensus or no kernel support.");
+        if (!have_logged_kist_suddenly_disabled) {
+          /* We should only log this once in most cases. If it was the kernel
+           * losing support for kist that caused scheduler_can_use_kist() to
+           * return false, then this flag makes sure we only log this message
+           * once. If it was the consensus that switched from "yes use kist"
+           * to "no don't use kist", then we still set the flag so we log
+           * once, but we unset the flag elsewhere if we ever can_use_kist()
+           * again.
+           */
+          have_logged_kist_suddenly_disabled = 1;
+          log_notice(LD_SCHED, "Scheduler type KIST has been disabled by "
+                               "the consensus or no kernel support.");
+        }
 #else /* !(defined(HAVE_KIST_SUPPORT)) */
         log_info(LD_SCHED, "Scheduler type KIST not built in");
 #endif /* defined(HAVE_KIST_SUPPORT) */
         continue;
       }
+      /* This flag will only get set in one of two cases:
+       * 1 - the kernel lost support for kist. In that case, we don't expect to
+       *     ever end up here
+       * 2 - the consensus went from "yes use kist" to "no don't use kist".
+       * We might end up here if the consensus changes back to "yes", in which
+       * case we might want to warn the user again if it goes back to "no"
+       * yet again. Thus we unset the flag */
+      have_logged_kist_suddenly_disabled = 0;
       new_scheduler = get_kist_scheduler();
       scheduler_kist_set_full_mode();
       goto end;
@@ -338,6 +362,36 @@ set_scheduler(void)
  * Functions that can only be accessed from scheduler*.c
  *****************************************************************************/
 
+/** Returns human readable string for the given channel scheduler state. */
+const char *
+get_scheduler_state_string(int scheduler_state)
+{
+  switch (scheduler_state) {
+  case SCHED_CHAN_IDLE:
+    return "IDLE";
+  case SCHED_CHAN_WAITING_FOR_CELLS:
+    return "WAITING_FOR_CELLS";
+  case SCHED_CHAN_WAITING_TO_WRITE:
+    return "WAITING_TO_WRITE";
+  case SCHED_CHAN_PENDING:
+    return "PENDING";
+  default:
+    return "(invalid)";
+  }
+}
+
+/** Helper that logs channel scheduler_state changes. Use this instead of
+ * setting scheduler_state directly. */
+void
+scheduler_set_channel_state(channel_t *chan, int new_state)
+{
+  log_debug(LD_SCHED, "chan %" PRIu64 " changed from scheduler state %s to %s",
+      chan->global_identifier,
+      get_scheduler_state_string(chan->scheduler_state),
+      get_scheduler_state_string(new_state));
+  chan->scheduler_state = new_state;
+}
+
 /** Return the pending channel list. */
 smartlist_t *
 get_channels_pending(void)
@@ -411,15 +465,14 @@ scheduler_conf_changed(void)
  * Whenever we get a new consensus, this function is called.
  */
 void
-scheduler_notify_networkstatus_changed(const networkstatus_t *old_c,
-                                       const networkstatus_t *new_c)
+scheduler_notify_networkstatus_changed(void)
 {
   /* Maybe the consensus param made us change the scheduler. */
   set_scheduler();
 
   /* Then tell the (possibly new) scheduler that we have a new consensus */
   if (the_scheduler->on_new_consensus) {
-    the_scheduler->on_new_consensus(old_c, new_c);
+    the_scheduler->on_new_consensus();
   }
 }
 
@@ -475,11 +528,7 @@ scheduler_channel_doesnt_want_writes,(channel_t *chan))
                             scheduler_compare_channels,
                             offsetof(channel_t, sched_heap_idx),
                             chan);
-    chan->scheduler_state = SCHED_CHAN_WAITING_TO_WRITE;
-    log_debug(LD_SCHED,
-              "Channel " U64_FORMAT " at %p went from pending "
-              "to waiting_to_write",
-              U64_PRINTF_ARG(chan->global_identifier), chan);
+    scheduler_set_channel_state(chan, SCHED_CHAN_WAITING_TO_WRITE);
   } else {
     /*
      * It's not in pending, so it can't become waiting_to_write; it's
@@ -487,10 +536,7 @@ scheduler_channel_doesnt_want_writes,(channel_t *chan))
      * waiting_for_cells (remove it, can't write any more).
      */
     if (chan->scheduler_state == SCHED_CHAN_WAITING_FOR_CELLS) {
-      chan->scheduler_state = SCHED_CHAN_IDLE;
-      log_debug(LD_SCHED,
-                "Channel " U64_FORMAT " at %p left waiting_for_cells",
-                U64_PRINTF_ARG(chan->global_identifier), chan);
+      scheduler_set_channel_state(chan, SCHED_CHAN_IDLE);
     }
   }
 }
@@ -513,15 +559,13 @@ scheduler_channel_has_waiting_cells,(channel_t *chan))
      * the other lists.  It has waiting cells now, so it goes to
      * channels_pending.
      */
-    chan->scheduler_state = SCHED_CHAN_PENDING;
-    smartlist_pqueue_add(channels_pending,
-                         scheduler_compare_channels,
-                         offsetof(channel_t, sched_heap_idx),
-                         chan);
-    log_debug(LD_SCHED,
-              "Channel " U64_FORMAT " at %p went from waiting_for_cells "
-              "to pending",
-              U64_PRINTF_ARG(chan->global_identifier), chan);
+    scheduler_set_channel_state(chan, SCHED_CHAN_PENDING);
+    if (!SCHED_BUG(chan->sched_heap_idx != -1, chan)) {
+      smartlist_pqueue_add(channels_pending,
+                           scheduler_compare_channels,
+                           offsetof(channel_t, sched_heap_idx),
+                           chan);
+    }
     /* If we made a channel pending, we potentially have scheduling work to
      * do. */
     the_scheduler->schedule();
@@ -533,10 +577,7 @@ scheduler_channel_has_waiting_cells,(channel_t *chan))
      */
     if (!(chan->scheduler_state == SCHED_CHAN_WAITING_TO_WRITE ||
           chan->scheduler_state == SCHED_CHAN_PENDING)) {
-      chan->scheduler_state = SCHED_CHAN_WAITING_TO_WRITE;
-      log_debug(LD_SCHED,
-                "Channel " U64_FORMAT " at %p entered waiting_to_write",
-                U64_PRINTF_ARG(chan->global_identifier), chan);
+      scheduler_set_channel_state(chan, SCHED_CHAN_WAITING_TO_WRITE);
     }
   }
 }
@@ -603,23 +644,27 @@ scheduler_release_channel,(channel_t *chan))
     return;
   }
 
-  if (chan->scheduler_state == SCHED_CHAN_PENDING) {
-    if (smartlist_pos(channels_pending, chan) == -1) {
-      log_warn(LD_SCHED, "Scheduler asked to release channel %" PRIu64 " "
-                         "but it wasn't in channels_pending",
-               chan->global_identifier);
-    } else {
-      smartlist_pqueue_remove(channels_pending,
-                              scheduler_compare_channels,
-                              offsetof(channel_t, sched_heap_idx),
-                              chan);
-    }
+  /* Try to remove the channel from the pending list regardless of its
+   * scheduler state. We can release a channel in many places in the tor code
+   * so we can't rely on the channel state (PENDING) to remove it from the
+   * list.
+   *
+   * For instance, the channel can change state from OPEN to CLOSING while
+   * being handled in the scheduler loop leading to the channel being in
+   * PENDING state but not in the pending list. Furthermore, we release the
+   * channel when it changes state to close and a second time when we free it.
+   * Not ideal at all but for now that is the way it is. */
+  if (chan->sched_heap_idx != -1) {
+    smartlist_pqueue_remove(channels_pending,
+                            scheduler_compare_channels,
+                            offsetof(channel_t, sched_heap_idx),
+                            chan);
   }
 
   if (the_scheduler->on_channel_free) {
     the_scheduler->on_channel_free(chan);
   }
-  chan->scheduler_state = SCHED_CHAN_IDLE;
+  scheduler_set_channel_state(chan, SCHED_CHAN_IDLE);
 }
 
 /** Mark a channel as ready to accept writes */
@@ -639,17 +684,13 @@ scheduler_channel_wants_writes(channel_t *chan)
     /*
      * It can write now, so it goes to channels_pending.
      */
-    log_debug(LD_SCHED, "chan=%" PRIu64 " became pending",
-        chan->global_identifier);
-    smartlist_pqueue_add(channels_pending,
-                         scheduler_compare_channels,
-                         offsetof(channel_t, sched_heap_idx),
-                         chan);
-    chan->scheduler_state = SCHED_CHAN_PENDING;
-    log_debug(LD_SCHED,
-              "Channel " U64_FORMAT " at %p went from waiting_to_write "
-              "to pending",
-              U64_PRINTF_ARG(chan->global_identifier), chan);
+    scheduler_set_channel_state(chan, SCHED_CHAN_PENDING);
+    if (!SCHED_BUG(chan->sched_heap_idx != -1, chan)) {
+      smartlist_pqueue_add(channels_pending,
+                           scheduler_compare_channels,
+                           offsetof(channel_t, sched_heap_idx),
+                           chan);
+    }
     /* We just made a channel pending, we have scheduling work to do. */
     the_scheduler->schedule();
   } else {
@@ -659,10 +700,45 @@ scheduler_channel_wants_writes(channel_t *chan)
      */
     if (!(chan->scheduler_state == SCHED_CHAN_WAITING_FOR_CELLS ||
           chan->scheduler_state == SCHED_CHAN_PENDING)) {
-      chan->scheduler_state = SCHED_CHAN_WAITING_FOR_CELLS;
-      log_debug(LD_SCHED,
-                "Channel " U64_FORMAT " at %p entered waiting_for_cells",
-                U64_PRINTF_ARG(chan->global_identifier), chan);
+      scheduler_set_channel_state(chan, SCHED_CHAN_WAITING_FOR_CELLS);
+    }
+  }
+}
+
+/* Log warn the given channel and extra scheduler context as well. This is
+ * used by SCHED_BUG() in order to be able to extract as much information as
+ * we can when we hit a bug. Channel chan can be NULL. */
+void
+scheduler_bug_occurred(const channel_t *chan)
+{
+  char buf[128];
+
+  if (chan != NULL) {
+    const size_t outbuf_len =
+      buf_datalen(TO_CONN(BASE_CHAN_TO_TLS((channel_t *) chan)->conn)->outbuf);
+    tor_snprintf(buf, sizeof(buf),
+                 "Channel %" PRIu64 " in state %s and scheduler state %s."
+                 " Num cells on cmux: %d. Connection outbuf len: %lu.",
+                 chan->global_identifier,
+                 channel_state_to_string(chan->state),
+                 get_scheduler_state_string(chan->scheduler_state),
+                 circuitmux_num_cells(chan->cmux),
+                 (unsigned long)outbuf_len);
+  }
+
+  {
+    char *msg;
+    /* Rate limit every 60 seconds. If we start seeing this every 60 sec, we
+     * know something is stuck/wrong. It *should* be loud but not too much. */
+    static ratelim_t rlimit = RATELIM_INIT(60);
+    if ((msg = rate_limit_log(&rlimit, approx_time()))) {
+      log_warn(LD_BUG, "%s Num pending channels: %d. "
+                       "Channel in pending list: %s.%s",
+               (chan != NULL) ? buf : "No channel in bug context.",
+               smartlist_len(channels_pending),
+               (smartlist_pos(channels_pending, chan) == -1) ? "no" : "yes",
+               msg);
+      tor_free(msg);
     }
   }
 }

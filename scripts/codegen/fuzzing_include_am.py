@@ -7,8 +7,9 @@ FUZZERS = """
 	diff-apply
 	extrainfo
 	hsdescv2
+	hsdescv3
 	http
-        http-connect
+	http-connect
 	iptsv2
 	microdesc
 	vrs

@@ -29,13 +29,12 @@ const node_t *node_get_by_hex_id(const char *identity_digest,
 node_t *nodelist_set_routerinfo(routerinfo_t *ri, routerinfo_t **ri_old_out);
 node_t *nodelist_add_microdesc(microdesc_t *md);
 void nodelist_set_consensus(networkstatus_t *ns);
+int nodelist_probably_contains_address(const tor_addr_t *addr);
 
 void nodelist_remove_microdesc(const char *identity_digest, microdesc_t *md);
 void nodelist_remove_routerinfo(routerinfo_t *ri);
 void nodelist_purge(void);
 smartlist_t *nodelist_find_nodes_with_microdesc(const microdesc_t *md);
-
-void nodelist_recompute_all_hsdir_indices(void);
 
 void nodelist_free_all(void);
 void nodelist_assert_ok(void);
@@ -65,7 +64,8 @@ const smartlist_t *node_get_declared_family(const node_t *node);
 const ed25519_public_key_t *node_get_ed25519_id(const node_t *node);
 int node_ed25519_id_matches(const node_t *node,
                             const ed25519_public_key_t *id);
-int node_supports_ed25519_link_authentication(const node_t *node);
+int node_supports_ed25519_link_authentication(const node_t *node,
+                                              int compatible_with_us);
 int node_supports_v3_hsdir(const node_t *node);
 int node_supports_ed25519_hs_intro(const node_t *node);
 int node_supports_v3_rendezvous_point(const node_t *node);
@@ -77,14 +77,16 @@ int node_has_ipv6_dirport(const node_t *node);
 /* Deprecated - use node_ipv6_or_preferred or node_ipv6_dir_preferred */
 #define node_ipv6_preferred(node) node_ipv6_or_preferred(node)
 int node_ipv6_or_preferred(const node_t *node);
-int node_get_prim_orport(const node_t *node, tor_addr_port_t *ap_out);
+void node_get_prim_orport(const node_t *node, tor_addr_port_t *ap_out);
 void node_get_pref_orport(const node_t *node, tor_addr_port_t *ap_out);
 void node_get_pref_ipv6_orport(const node_t *node, tor_addr_port_t *ap_out);
 int node_ipv6_dir_preferred(const node_t *node);
-int node_get_prim_dirport(const node_t *node, tor_addr_port_t *ap_out);
+void node_get_prim_dirport(const node_t *node, tor_addr_port_t *ap_out);
 void node_get_pref_dirport(const node_t *node, tor_addr_port_t *ap_out);
 void node_get_pref_ipv6_dirport(const node_t *node, tor_addr_port_t *ap_out);
 int node_has_curve25519_onion_key(const node_t *node);
+const curve25519_public_key_t *node_get_curve25519_onion_key(
+                                  const node_t *node);
 
 MOCK_DECL(smartlist_t *, nodelist_get_list, (void));
 
@@ -152,6 +154,8 @@ node_set_hsdir_index(node_t *node, const networkstatus_t *ns);
 #endif /* defined(TOR_UNIT_TESTS) */
 
 #endif /* defined(NODELIST_PRIVATE) */
+
+MOCK_DECL(int, get_estimated_address_per_node, (void));
 
 #endif /* !defined(TOR_NODELIST_H) */
 

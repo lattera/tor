@@ -3,6 +3,7 @@
 .#*
 *~
 *.swp
+*.swo
 # C stuff
 *.o
 *.obj
@@ -211,6 +212,7 @@ uptime-*.json
 /src/test/fuzz/lf-fuzz-*
 
 # /src/tools/
+/src/tools/libtorrunner.a
 /src/tools/tor-checkkey
 /src/tools/tor-resolve
 /src/tools/tor-cov-resolve
