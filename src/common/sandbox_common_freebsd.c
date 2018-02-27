@@ -52,6 +52,8 @@ int backend_fd;
 
 static size_t nuuids, ndirs;
 
+static int sandbox_freebsd_cfg_allow_open_filename(sandbox_cfg_t **, char *);
+
 static int
 sandbox_freebsd_is_active(void)
 {
@@ -633,12 +635,14 @@ sandbox_freebsd_stat(const char *path, struct stat *sb)
 
   /* The path passed in must be the fully-qualified path */
   if (path[0] != '/') {
+    log_err(LD_BUG, "Path \'%s\' is not a fully-qualified path");
     errno = EPERM;
     return -1;
   }
 
   dirfd = lookup_directory(path);
   if (dirfd == NULL) {
+    log_err(LD_BUG, "Path \'%s\' is not in the directory whitelist");
     errno = EPERM;
     return -1;
   }
@@ -813,6 +817,8 @@ sandbox_freebsd_init(sandbox_cfg_t *cfg)
   if (gmtime(&clock) == NULL) {
     return -1;
   }
+
+  sandbox_freebsd_cfg_allow_open_filename(NULL, "/etc");
 
   pthread_mutex_init(&sandbox_mtx, NULL);
   fork_backend();
