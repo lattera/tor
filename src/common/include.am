@@ -183,6 +183,9 @@ COMMONHEADERS = \
   src/common/procmon.h				\
   src/common/pubsub.h				\
   src/common/sandbox.h				\
+  src/common/sandbox_dummy.h			\
+  src/common/sandbox_freebsd.h			\
+  src/common/sandbox_linux.h			\
   src/common/storagedir.h			\
   src/common/testsupport.h			\
   src/common/timers.h				\
